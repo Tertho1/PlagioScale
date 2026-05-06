@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "plagioscale"
+    static_configs:
+      - targets: ['api-service:8000', 'monitoring-service:8090', 'worker:8001', 'autoscaler:8002']
+    metrics_path: /metrics
+    scheme: http

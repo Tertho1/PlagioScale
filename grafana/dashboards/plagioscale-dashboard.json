@@ -1,0 +1,62 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {},
+      "targets": [{"expr": "plagioscale_monitor_queue_length", "refId": "A"}],
+      "title": "Queue Length",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {},
+      "targets": [{"expr": "plagioscale_monitor_workers", "refId": "A"}],
+      "title": "Workers Running",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 6},
+      "id": 3,
+      "options": {},
+      "targets": [{"expr": "increase(plagioscale_worker_jobs_processed_total[1m])", "refId": "A"}],
+      "title": "Jobs Processed (1m)",
+      "type": "graph"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 12},
+      "id": 4,
+      "options": {},
+      "targets": [{"expr": "plagioscale_autoscaler_scale_events_total", "refId": "A"}],
+      "title": "Scale Events",
+      "type": "graph"
+    }
+  ],
+  "schemaVersion": 30,
+  "style": "dark",
+  "tags": ["plagioscale"],
+  "templating": {"list": []},
+  "time": {"from": "now-5m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "PlagioScale Overview",
+  "uid": "plagioscale-overview",
+  "version": 1
+}

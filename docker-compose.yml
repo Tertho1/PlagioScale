@@ -1,0 +1,149 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: plagioscale-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - plagioscale-network
+
+  api-service:
+    build:
+      context: .
+      dockerfile: api-service/Dockerfile
+    container_name: plagioscale-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker-service/Dockerfile
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WORKER_ID=worker-1
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+  autoscaler:
+    build:
+      context: .
+      dockerfile: autoscaler/Dockerfile
+    container_name: plagioscale-autoscaler
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - COMPOSE_PROJECT_NAME=plagioscale
+      - SCALE_UP_THRESHOLD=10
+      - SCALE_DOWN_THRESHOLD=3
+      - MIN_WORKERS=1
+      - MAX_WORKERS=5
+      - COOLDOWN_SECONDS=20
+      - POLL_INTERVAL=5
+      - AUTOSCALER_EVENTS_KEY=autoscaler_events
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+
+  monitoring-service:
+    build:
+      context: .
+      dockerfile: monitoring-service/Dockerfile
+    container_name: plagioscale-monitoring
+    ports:
+      - "8090:8090"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - COMPOSE_PROJECT_NAME=plagioscale
+      - AUTOSCALER_EVENTS_KEY=autoscaler_events
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: plagioscale-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      api-service:
+        condition: service_started
+      monitoring-service:
+        condition: service_started
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:9.0.0
+    container_name: plagioscale-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: plagioscale-portainer
+    ports:
+      - "8080:8000"
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+
+networks:
+  plagioscale-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus_data:
+  grafana_data:
+  portainer_data:
