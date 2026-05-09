@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.models import Job, JobStatus
 from shared.queue_client import QueueClient
 from shared.plagiarism import PlagiarismDetector, compare_with_database
+from shared.database import init_db, store_job_result, update_job_status
 from prometheus_client import start_http_server, Counter, Histogram, Gauge
 
 # Get worker ID from environment
@@ -39,6 +40,7 @@ class Worker:
     def __init__(self):
         """Initialize worker."""
         self.queue_client = QueueClient()
+        self.db_ready = init_db()
         self.detector = PlagiarismDetector(k=5)
         print(f"[{WORKER_ID}] Worker initialized")
     
@@ -58,6 +60,8 @@ class Worker:
             
             # Update status to PROCESSING
             self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)
+            if self.db_ready:
+                update_job_status(job.job_id, JobStatus.PROCESSING.value, worker_id=WORKER_ID)
             
             # Simulate processing time (can be reduced for testing)
             time.sleep(1)
@@ -80,6 +84,8 @@ class Worker:
             
             # Store result in Redis
             self.queue_client.store_result(job.job_id, result)
+            if self.db_ready:
+                store_job_result(job.job_id, result, worker_id=WORKER_ID)
             
             # Save result to file as well (for durability)
             self._save_to_file(job.job_id, result)
@@ -94,6 +100,8 @@ class Worker:
         except Exception as e:
             print(f"[{WORKER_ID}] ✗ Error processing job {job.job_id}: {e}")
             self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
+            if self.db_ready:
+                update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
             JOBS_FAILED.inc()
             return False
     

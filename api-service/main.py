@@ -13,6 +13,7 @@ from prometheus_client import make_asgi_app, Counter, Gauge
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.models import Job, JobStatus
 from shared.queue_client import QueueClient
+from shared.database import create_job_record, get_job_record, init_db
 
 app = FastAPI(title="PlagioScale API", version="1.0.0")
 # Prometheus metrics
@@ -22,6 +23,7 @@ QUEUE_LENGTH_GAUGE = Gauge('plagioscale_queue_length', 'Current Redis queue leng
 # Mount Prometheus ASGI app at /metrics
 app.mount("/metrics", make_asgi_app())
 queue_client = QueueClient()
+db_ready = init_db()
 
 
 class SubmitRequest(BaseModel):
@@ -57,6 +59,8 @@ async def submit_text(request: SubmitRequest):
     job = Job(job_id=job_id, text=request.text)
     
     if queue_client.enqueue_job(job):
+        if db_ready:
+            create_job_record(job_id=job_id, text=request.text, status=JobStatus.PENDING.value)
         REQUESTS_SUBMITTED.inc()
         return {
             "job_id": job_id,
@@ -72,6 +76,16 @@ async def get_result(job_id: str):
     """
     Retrieve plagiarism detection result.
     """
+    if db_ready:
+        db_record = get_job_record(job_id)
+        if db_record:
+            return {
+                "job_id": db_record["job_id"],
+                "status": db_record["status"],
+                "result": db_record["result"],
+                "error": db_record["error"],
+            }
+
     status = queue_client.get_job_status(job_id)
     
     if not status:
@@ -89,6 +103,14 @@ async def get_result(job_id: str):
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     """Get job processing status."""
+    if db_ready:
+        db_record = get_job_record(job_id)
+        if db_record:
+            return {
+                "job_id": db_record["job_id"],
+                "status": db_record["status"],
+            }
+
     status = queue_client.get_job_status(job_id)
     
     if not status:

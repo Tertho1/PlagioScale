@@ -1,4 +1,23 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: plagioscale-postgres
+    environment:
+      - POSTGRES_DB=plagioscale
+      - POSTGRES_USER=plagio
+      - POSTGRES_PASSWORD=plagio_pass
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plagio -d plagioscale"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - plagioscale-network
+
   redis:
     image: redis:7-alpine
     container_name: plagioscale-redis
@@ -22,8 +41,15 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=plagioscale
+      - DB_USER=plagio
+      - DB_PASSWORD=plagio_pass
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - plagioscale-network
@@ -37,8 +63,15 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - WORKER_ID=worker-1
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=plagioscale
+      - DB_USER=plagio
+      - DB_PASSWORD=plagio_pass
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - plagioscale-network
@@ -143,6 +176,7 @@ networks:
     driver: bridge
 
 volumes:
+  postgres_data:
   redis-data:
   prometheus_data:
   grafana_data:
