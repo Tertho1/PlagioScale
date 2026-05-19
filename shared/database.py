@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, String, Text, create_engine
+from sqlalchemy import DateTime, String, Text, create_engine, Float, JSON, Integer
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -43,6 +43,45 @@ class JobRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class Assignment(Base):
+    """Assignment/Batch metadata."""
+    __tablename__ = "assignments"
+    
+    batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    access_code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class Submission(Base):
+    """Student submission for an assignment."""
+    __tablename__ = "submissions"
+    
+    submission_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    roll: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ai_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    plagiarism_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class SimilarityResult(Base):
+    """Pairwise similarity between submissions."""
+    __tablename__ = "similarity_results"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    submission_id_1: Mapped[str] = mapped_column(String(64), nullable=False)
+    submission_id_2: Mapped[str] = mapped_column(String(64), nullable=False)
+    similarity_score: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 @contextmanager
@@ -149,3 +188,93 @@ def get_job_record(job_id: str) -> Optional[dict]:
     except Exception as exc:
         print(f"⚠ Failed reading record {job_id}: {exc}")
         return None
+
+
+# Assignment and Submission helpers
+def create_assignment(batch_id: str, name: str, access_code: str, expected_count: int = 0) -> bool:
+    try:
+        with get_session() as session:
+            session.add(Assignment(batch_id=batch_id, name=name, access_code=access_code, expected_count=expected_count))
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed creating assignment {batch_id}: {exc}")
+        return False
+
+
+def create_submission(submission_id: str, batch_id: str, roll: str, name: Optional[str], filename: str, file_path: str) -> bool:
+    try:
+        with get_session() as session:
+            session.add(Submission(submission_id=submission_id, batch_id=batch_id, roll=roll, name=name, filename=filename, file_path=file_path))
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed creating submission {submission_id}: {exc}")
+        return False
+
+
+def get_submissions_by_batch(batch_id: str) -> list:
+    try:
+        with get_session() as session:
+            records = session.query(Submission).filter(Submission.batch_id == batch_id).all()
+            return [
+                {
+                    "submission_id": r.submission_id,
+                    "roll": r.roll,
+                    "name": r.name,
+                    "file_path": r.file_path,
+                    "plagiarism_score": r.plagiarism_score,
+                    "ai_score": r.ai_score,
+                    "embedding_json": r.embedding_json,
+                }
+                for r in records
+            ]
+    except Exception as exc:
+        print(f"⚠ Failed fetching submissions for batch {batch_id}: {exc}")
+        return []
+
+
+def store_submission_embedding(submission_id: str, embedding: list) -> bool:
+    try:
+        with get_session() as session:
+            record = session.query(Submission).filter(Submission.submission_id == submission_id).first()
+            if record:
+                record.embedding_json = json.dumps(embedding)
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed storing embedding for {submission_id}: {exc}")
+        return False
+
+
+def store_similarity_results(batch_id: str, results: dict) -> bool:
+    """Store pairwise similarity results."""
+    try:
+        with get_session() as session:
+            # Clear existing results for this batch
+            session.query(SimilarityResult).filter(SimilarityResult.batch_id == batch_id).delete()
+            # Insert new results
+            for sub_id_1, scores in results.items():
+                for sub_id_2, score in scores.items():
+                    if sub_id_1 < sub_id_2:  # avoid duplicates
+                        session.add(SimilarityResult(batch_id=batch_id, submission_id_1=sub_id_1, submission_id_2=sub_id_2, similarity_score=score))
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed storing similarity results for batch {batch_id}: {exc}")
+        return False
+
+
+def get_similarity_matrix(batch_id: str) -> dict:
+    """Retrieve similarity matrix for a batch."""
+    try:
+        with get_session() as session:
+            records = session.query(SimilarityResult).filter(SimilarityResult.batch_id == batch_id).all()
+            matrix = {}
+            for r in records:
+                if r.submission_id_1 not in matrix:
+                    matrix[r.submission_id_1] = {}
+                if r.submission_id_2 not in matrix:
+                    matrix[r.submission_id_2] = {}
+                matrix[r.submission_id_1][r.submission_id_2] = r.similarity_score
+                matrix[r.submission_id_2][r.submission_id_1] = r.similarity_score
+        return matrix
+    except Exception as exc:
+        print(f"⚠ Failed retrieving similarity matrix for batch {batch_id}: {exc}")
+        return {}

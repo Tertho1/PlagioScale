@@ -62,6 +62,7 @@ redis_data/
 # Temporary
 tmp/
 temp/
+tmp_similarity_test/
 *.tmp
 *.bak
 
