@@ -232,6 +232,61 @@ def get_submissions_by_batch(batch_id: str) -> list:
         return []
 
 
+def get_assignment(batch_id: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = session.get(Assignment, batch_id)
+            if not record:
+                return None
+            return {
+                'batch_id': record.batch_id,
+                'name': record.name,
+                'access_code': record.access_code,
+                'expected_count': record.expected_count,
+                'created_at': record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading assignment {batch_id}: {exc}")
+        return None
+
+
+def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = session.query(Assignment).filter(Assignment.access_code == access_code).first()
+            if not record:
+                return None
+            return {
+                'batch_id': record.batch_id,
+                'name': record.name,
+                'access_code': record.access_code,
+                'expected_count': record.expected_count,
+                'created_at': record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading assignment by access code {access_code}: {exc}")
+        return None
+
+
+def list_assignments() -> list:
+    try:
+        with get_session() as session:
+            records = session.query(Assignment).all()
+            return [
+                {
+                    'batch_id': r.batch_id,
+                    'name': r.name,
+                    'access_code': r.access_code,
+                    'expected_count': r.expected_count,
+                    'created_at': r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ]
+    except Exception as exc:
+        print(f"⚠ Failed listing assignments: {exc}")
+        return []
+
+
 def store_submission_embedding(submission_id: str, embedding: list) -> bool:
     try:
         with get_session() as session:

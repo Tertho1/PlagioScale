@@ -33,7 +33,7 @@ export default function SimilarityMatrix({matrix, labels, onCellClick, maxDispla
             <div className="smatrix-rowheader">{labels[i]}</div>
             {row.map((cell, j)=> (
               <div key={`c-${i}-${j}`} className="smatrix-cell" title={`${labels[i]} ↔ ${labels[j]}: ${cell.toFixed(3)}`} onClick={()=>onCellClick && onCellClick(i,j,cell)} style={{background: scoreToColor(cell)}}>
-                {i===j ? '—' : (cell>0.6 ? cell.toFixed(2) : '')}
+                  {i===j ? '—' : cell.toFixed(2)}
               </div>
             ))}
           </React.Fragment>

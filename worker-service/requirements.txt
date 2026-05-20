@@ -2,3 +2,8 @@ redis==5.0.0
 prometheus_client==0.16.0
 SQLAlchemy==2.0.30
 psycopg2-binary==2.9.9
+requests==2.31.0
+pypdf==4.3.1
+python-docx==1.1.2
+numpy==1.26.1
+scikit-learn==1.4.2

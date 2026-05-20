@@ -25,6 +25,7 @@ export default function TeacherDashboard(){
   const [progress, setProgress] = useState({ processed:0, total:0 })
   const [matrix, setMatrix] = useState(null)
   const [labels, setLabels] = useState([])
+  const [computing, setComputing] = useState(false)
   const [viewer, setViewer] = useState({open:false,left:null,right:null,similarity:0})
   const wsRef = useRef(null)
 
@@ -60,20 +61,43 @@ export default function TeacherDashboard(){
   async function computeAndFetch(){
     if(!batchId) return alert('Create or enter a batch id first')
     try{
+      setComputing(true)
+      // enqueue batch compute job
       const post = await fetch(`${API_BASE}/portal/compute-similarity/${batchId}`, {method:'POST'})
       const pdata = await post.json()
-      if(!post.ok){ return alert(pdata.detail || 'Compute failed') }
-      const matrixObj = pdata.similarity_matrix
-      if(!matrixObj) return alert('No matrix returned')
+      if(!post.ok){ setComputing(false); return alert(pdata.detail || 'Compute enqueue failed') }
+      const jobId = pdata.job_id
+
+      // poll job status until COMPLETED or FAILED
+      let status = null
+      for(let i=0;i<300;i++){ // max ~10 minutes with 2s interval
+        try{
+          const sres = await fetch(`${API_BASE}/status/${jobId}`)
+          if(sres.ok){
+            const sjson = await sres.json()
+            status = sjson.status
+            if(status === 'COMPLETED') break
+            if(status === 'FAILED') break
+          }
+        }catch(e){ /* ignore transient */ }
+        await new Promise(r=>setTimeout(r,2000))
+      }
+      setComputing(false)
+      if(status !== 'COMPLETED') return alert('Compute failed or timed out')
+
+      // fetch similarity matrix after completion
+      const mres = await fetch(`${API_BASE}/portal/similarity-matrix/${batchId}`)
+      if(!mres.ok) return alert('Failed fetching matrix')
+      const mjson = await mres.json()
+      const matrixObj = mjson.matrix
       const ids = Object.keys(matrixObj)
-      // build 2D array
       const mat = ids.map(i => ids.map(j => matrixObj[i][j] || 0))
 
       // fetch submissions to get friendly labels (roll/name)
-      const sres = await fetch(`${API_BASE}/portal/submissions/${batchId}`)
+      const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}`)
       let labelsMap = {}
-      if(sres.ok){
-        const sjson = await sres.json()
+      if(sfetch.ok){
+        const sjson = await sfetch.json()
         sjson.submissions.forEach(s=>{ labelsMap[s.submission_id] = s.roll || s.name || s.submission_id })
       }
       const lbls = ids.map(id => labelsMap[id] || id)
@@ -81,6 +105,7 @@ export default function TeacherDashboard(){
       setMatrix(mat)
     }catch(e){
       console.error(e)
+      setComputing(false)
       alert('Compute failed')
     }
   }
@@ -214,7 +239,7 @@ export default function TeacherDashboard(){
             <p className="section-copy">Use the buttons below to refresh the matrix and download a CSV report for batch review.</p>
           </div>
           <div className="mini-toolbar">
-            <button onClick={handleGenerateMock} className="button-secondary">Refresh matrix</button>
+            <button onClick={computeAndFetch} className="button-secondary" disabled={computing}>{computing ? 'Computing...' : 'Refresh matrix'}</button>
             <button onClick={handleExportCSV} className="button">Export CSV</button>
           </div>
         </div>
