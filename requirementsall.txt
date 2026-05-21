@@ -1,0 +1,28 @@
+# Combined requirements for PlagioScale services
+# Use this to install a single venv for development or CI.
+# Notes:
+# - For Windows, prefer Python 3.11/3.12 or use Docker/Conda to avoid build issues
+#   (pydantic-core, scikit-learn, and psycopg2 may require native toolchains).
+# - If you use Postgres, ensure `psycopg2-binary` or the pg development headers are available.
+
+fastapi==0.136.1
+uvicorn[standard]==0.24.0
+pydantic==2.13.4
+redis==5.0.0
+prometheus_client==0.16.0
+SQLAlchemy==2.0.30
+psycopg[binary]==3.3.4
+python-multipart==0.0.6
+numpy==2.4.6
+scikit-learn==1.8.0
+
+# worker dependencies
+requests==2.31.0
+pypdf==6.11.0
+python-docx==1.2.0
+
+# docker/automation utilities used by some services
+docker==7.0.0
+
+# Optional / helper packages
+typing-extensions>=4.15.0

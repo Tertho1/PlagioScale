@@ -1,168 +1,143 @@
-# PlagioScale - Cloud-Native Plagiarism Detection System
+# PlagioScale
 
-A distributed, cloud-native plagiarism detection system built with microservices architecture, queue-based processing, and autoscaling capabilities.
+PlagioScale is a cloud-native, microservices-based plagiarism detection platform that demonstrates a production-like architecture suitable for local development and testing.
 
-## Architecture
+Key ideas: lightweight API, Redis-backed queue, background workers, and a React + Vite frontend for submissions and teacher dashboards.
 
-```
-User → API Service (FastAPI) → Redis Queue → Worker(s) → Storage
-                                    ↑
-                              Autoscaler
-```
+Live demo status: the repository includes Docker Compose orchestration that launches the full stack (Postgres, Redis, API, worker, frontend). The project has been verified end-to-end: create an assignment, upload ≥2 submissions, run similarity compute, and fetch the resulting matrix.
 
-### Components
+---
 
-- **API Service** (FastAPI): Accepts plagiarism detection requests, enqueues jobs, returns results
-- **Worker Service** (Python): Processes jobs from queue using k-shingle + cosine similarity algorithms
-- **Redis**: Message queue storing pending jobs and job metadata
-- **Autoscaler**: Monitors queue length and scales workers automatically
-- **Storage**: SQLite + JSON files for job results
+Table of Contents
 
-## Job Lifecycle
+- Overview
+- Quick Start (Docker)
+- Local Development (Python & Frontend)
+- Architecture
+- Configuration & Environment Variables
+- Troubleshooting
+- What's changed (recent fixes)
+- Contributing
+- License
 
-Jobs flow through states: `PENDING → PROCESSING → COMPLETED → FAILED`
+---
 
-## Quick Start
+## Overview
 
-### Prerequisites
+PlagioScale implements a k-shingle + cosine similarity pipeline to detect text overlap across student submissions. It is intentionally small and modular to let you iterate on algorithms, scale workers, or integrate monitoring and autoscaling.
+
+## Quick Start (recommended — Docker)
+
+Prerequisites:
+
 - Docker Desktop
-- Python 3.11+
 
-### 1. Build and Start Services
-
-```bash
-docker-compose up --build
-```
-
-This starts:
-- Redis on port 6379
-- API Service on port 8000
-- 1 Worker instance
-
-### 2. Submit a Plagiarism Detection Request
+Start the full stack:
 
 ```bash
-curl -X POST http://localhost:8000/submit \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Your text to check for plagiarism"}'
+docker compose up -d --build
 ```
 
-Response:
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "submitted",
-  "message": "Job queued for processing"
-}
+Services started by the compose file include:
+
+- Redis (queue)
+- Postgres (storage)
+- API Service (FastAPI) on port 8000
+- Worker Service (background jobs)
+- Frontend (Vite/React) on port 5173 (dev) or served via Docker
+
+Smoke-test flow (what to try first):
+
+1. Create an assignment via the teacher portal.
+2. Upload at least two submissions (student portal).
+3. Click "Compute similarity" on the teacher dashboard.
+4. Wait for worker completion and view the similarity matrix.
+
+## Local Development (Python backend)
+
+If you prefer running services locally without Docker, create a Python virtual environment and install consolidated dependencies:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirementsall.txt
 ```
 
-### 3. Check Job Status
+Caveats:
+
+- On Windows you may need Visual C++ Build Tools and, for some packages, Rust toolchain. To avoid native builds, match the Python version used by Docker (Python 3.11) or use the provided pinned `requirementsall.txt` which favors wheel-compatible versions.
+- You must run Redis and Postgres locally and export correct env vars (see Configuration below).
+
+## Frontend (React + Vite)
+
+Development:
 
 ```bash
-curl http://localhost:8000/status/{job_id}
+cd frontend
+npm install
+npm run dev
 ```
 
-### 4. Retrieve Results
+The frontend expects the API base URL to be available via `VITE_API_BASE` (defaults to `http://localhost:8000`).
+
+To build for production:
 
 ```bash
-curl http://localhost:8000/result/{job_id}
+cd frontend
+npm run build
 ```
 
-Response:
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "COMPLETED",
-  "result": {
-    "max_plagiarism_score": 0.7234,
-    "avg_plagiarism_score": 0.5123,
-    "comparison_results": [...]
-  }
-}
-```
+## Architecture (high level)
 
-## API Endpoints
+User → API (FastAPI) → Redis Queue → Worker(s) → Postgres + results
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/submit` | Submit text for plagiarism detection |
-| GET | `/result/{job_id}` | Get job result |
-| GET | `/status/{job_id}` | Get job status |
-| GET | `/queue/stats` | Get queue statistics |
-| GET | `/health` | Health check |
+-+- API: Receives submissions and management actions (create assignment, submit file, request compute).
 
-## Testing with Stress Test
+- Queue: Redis list + job metadata for reliable handoff to workers.
+- Workers: dequeue jobs, extract text, vectorize, compute pairwise similarity, store results.
 
-Run the stress testing script to simulate multiple requests:
+## Configuration & Environment Variables
 
-```bash
-# Submit 50 jobs with 5 concurrent threads
-python stress_test.py 50 5
-```
+When running with Docker Compose, the compose file sets sensible defaults. For local runs you'll need to set:
 
-This will:
-1. Submit 50 plagiarism detection jobs
-2. Monitor queue stats
-3. Wait for completion and report results
-4. Show throughput metrics
+- `DATABASE_URL` or `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
+- `REDIS_HOST` (set to `localhost` for local Redis)
+- `VITE_API_BASE` (frontend dev server)
 
-## Scaling Workers
+## Troubleshooting
 
-Scale up to 3 workers:
+- If API or worker crashes with `ModuleNotFoundError: No module named 'psycopg'` — ensure service requirements use `psycopg[binary]` and rebuild images: `docker compose up -d --build api-service worker`.
+- If dependency builds fail on Windows, match Docker's Python version (3.11) or install Visual C++ Build Tools and Rust to compile wheels.
+- Frontend shows "Computing..." indefinitely if a compute request was issued with fewer than two submissions — the API now rejects such requests with a clear 400 error. Upload ≥2 submissions before computing.
 
-```bash
-docker-compose up --scale worker=3
-```
+## What's changed (recent fixes performed)
 
-Scale down to 1 worker:
+- Consolidated dependencies into `requirementsall.txt` to simplify venv installs.
+- Added `scripts/setup_env.ps1` to automate local venv creation and installs.
+- Replaced legacy DB driver with `psycopg[binary]` and aligned service `requirements.txt` files.
+- Added server-side preflight validation for compute requests (rejects batches with <2 submissions).
+- Surfaced backend errors to the teacher dashboard to avoid indefinite spinners.
+- Rebuilt Docker images and verified end-to-end smoke test (assignment → upload 2 submissions → compute → matrix).
 
-```bash
-docker-compose up --scale worker=1
-```
+## Contributing
 
-## Project Structure
+Contributions are welcome. Please open issues for bugs or feature requests and submit PRs for fixes. Keep changes small and focused — prefer adding tests for new behavior.
 
-```
-PlagioScale/
-├── api-service/
-│   ├── main.py              # FastAPI application
-│   ├── requirements.txt      # Python dependencies
-│   └── Dockerfile            # Container image
-├── worker-service/
-│   ├── worker.py            # Worker process
-│   ├── requirements.txt      # Python dependencies
-│   └── Dockerfile            # Container image
-├── autoscaler/              # Auto-scaling logic (Phase 4)
-├── shared/
-│   ├── models.py            # Job schema and lifecycle
-│   ├── queue_client.py      # Redis queue abstraction
-│   └── plagiarism.py        # NLP detection engine
-├── storage/                 # Results storage
-├── docker-compose.yml       # Multi-container orchestration
-└── stress_test.py           # Load testing script
-```
+Suggested local dev flow:
 
-## Technology Stack
+1. Start Redis and Postgres locally or via Docker Compose.
+2. Run API and worker in your IDE using the `.venv`.
+3. Run frontend with `npm run dev` and set `VITE_API_BASE` to your API.
 
-- **Framework**: FastAPI
-- **Queue**: Redis
-- **Container**: Docker & Docker Compose
-- **Language**: Python 3.11
-- **Algorithm**: k-Shingle + Cosine Similarity
+## License & Contact
 
-## Next Steps
+This repository is provided as-is for educational and demonstration purposes. Include your preferred license here.
 
-Phase 2+:
-- [ ] Autoscaler with queue-based scaling
-- [ ] Prometheus + Grafana monitoring
-- [ ] Nginx reverse proxy
-- [ ] Kubernetes (K3s) migration
-- [ ] S3 storage integration
+---
 
-## Roadmap to A+ Grade
+If you'd like, I can:
 
-✅ Phase 1: Microservices + Queue + Job Lifecycle
-🔄 Phase 2-3: Docker + docker-compose (local cloud)
-📊 Phase 4: Autoscaler (queue-driven)
-📈 Phase 5: Monitoring (Prometheus + Grafana)
-🚀 Phase 6: Kubernetes (K3s)
+- open a PR with this updated README and the removal of `frontend/README.md`;
+- add a short banner in the teacher dashboard reminding users to upload at least two submissions before computing.
+
+---
