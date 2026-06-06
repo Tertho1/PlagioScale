@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import SimilarityMatrix from "../components/SimilarityMatrix";
 import MatrixViewer from "../components/MatrixViewer";
 import "../styles/portal.css";
+import { clearToken, getAuthHeaders, getToken, getStoredEmail } from "../utils/auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
@@ -19,6 +21,7 @@ function generateMockMatrix(n) {
 }
 
 export default function TeacherDashboard() {
+  const navigate = useNavigate();
   const [assignName, setAssignName] = useState("");
   const [batchId, setBatchId] = useState("");
   const [accessCode, setAccessCode] = useState("");
@@ -33,14 +36,28 @@ export default function TeacherDashboard() {
     similarity: 0,
   });
   const wsRef = useRef(null);
+  const authToken = getToken();
+  const authEmail = getStoredEmail();
 
   async function createAssignment(e) {
     e.preventDefault();
+    if (!authToken) {
+      navigate("/auth");
+      return;
+    }
     const res = await fetch(`${API_BASE}/portal/assignments`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({ name: assignName, expected_count: 50 }),
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Failed to create assignment");
+      return;
+    }
     const data = await res.json();
     setBatchId(data.batch_id);
     setAccessCode(data.access_code);
@@ -124,7 +141,10 @@ export default function TeacherDashboard() {
       if (sfetch.ok) {
         const sjson = await sfetch.json();
         sjson.submissions.forEach((s) => {
-          labelsMap[s.submission_id] = s.roll || s.name || s.submission_id;
+          const pieces = [s.roll];
+          if (s.name) pieces.push(s.name);
+          if (s.email) pieces.push(s.email);
+          labelsMap[s.submission_id] = pieces.filter(Boolean).join(" · ") || s.submission_id;
         });
       }
       const lbls = ids.map((id) => labelsMap[id] || id);
@@ -155,34 +175,61 @@ export default function TeacherDashboard() {
   return (
     <div className="page-shell">
       <div className="top-nav">
-        <a href="/" className="brand-mark">
+        <Link to="/" className="brand-mark">
           <span className="brand-badge">P</span>
           <span className="brand-copy">
             <strong>PlagioScale</strong>
-            <span>Teacher review dashboard</span>
+            <span>Review dashboard</span>
           </span>
-        </a>
+        </Link>
         <div className="nav-links">
-          <a href="/" className="nav-link">
+          <Link to="/" className="nav-link">
             Home
-          </a>
-          <a href="/student" className="nav-link">
+          </Link>
+          <Link to="/student" className="nav-link">
             Student Upload
-          </a>
+          </Link>
+          <Link to="/auth" className="nav-link">Login / Sign up</Link>
+          {authToken && (
+            <button
+              type="button"
+              className="nav-link"
+              style={{ background: "none", border: "none", cursor: "pointer" }}
+              onClick={() => {
+                clearToken();
+                navigate("/auth");
+              }}
+            >
+              Logout
+            </button>
+          )}
         </div>
       </div>
 
-      <section className="hero-card" style={{ marginBottom: 20 }}>
-        <div className="eyebrow">Step 2 · Teacher review</div>
-        <h1>
-          Create a batch, track submissions, and inspect similarity at a glance.
-        </h1>
-        <p className="hero-copy">
-          Set up an assignment batch, share the access code with students, and
-          use the matrix to spot possible overlap. The export button gives you a
-          CSV summary for offline review.
-        </p>
-      </section>
+      {!authToken ? (
+        <section className="hero-card" style={{ marginBottom: 20 }}>
+          <div className="eyebrow">Authentication required</div>
+          <h1>Sign in before creating or reviewing batches.</h1>
+          <p className="hero-copy">
+            Assignment creation is protected so only signed-in users can create and own batches.
+          </p>
+          <div className="toolbar">
+            <Link to="/auth" className="button">
+              Go to login
+            </Link>
+          </div>
+        </section>
+      ) : (
+        <section className="hero-card" style={{ marginBottom: 20 }}>
+          <div className="eyebrow">Step 2 · Review</div>
+          <h1>
+            Create a batch, track submissions, and inspect similarity at a glance.
+          </h1>
+          <p className="hero-copy">
+            Signed in as <span className="mono">{authEmail || "user"}</span>. Set up an assignment batch, share the access code with students, and use the matrix to spot possible overlap.
+          </p>
+        </section>
+      )}
 
       <div className="metric-row" style={{ marginBottom: 20 }}>
         <div className="metric-card">
@@ -204,8 +251,7 @@ export default function TeacherDashboard() {
           <div className="section-label">Batch setup</div>
           <h2 className="section-title">Create an assignment batch</h2>
           <p className="section-copy">
-            Give the batch a clear name. When you create it, the portal will
-            generate a shareable access code for students.
+            Give the batch a clear name. When you create it, the portal will generate a shareable access code for students.
           </p>
 
           <form

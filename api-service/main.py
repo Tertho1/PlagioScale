@@ -1,23 +1,23 @@
-"""
-FastAPI service for PlagioScale - accepts plagiarism detection requests and queues them.
-"""
+"""PlagioScale API service."""
 
 from fastapi import (
     FastAPI,
     HTTPException,
+    Depends,
+    Header,
     UploadFile,
     File,
     Form,
     WebSocket,
     WebSocketDisconnect,
+    Request,
 )
-from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import sys
 import os
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from prometheus_client import make_asgi_app, Counter, Gauge
 import json
 import csv
@@ -39,10 +39,21 @@ from shared.database import (
     store_submission_embedding,
     get_assignment,
     get_assignment_by_access_code,
+    create_user,
+    get_user_by_email,
+    get_user_by_id,
+    get_active_submission_by_batch_and_roll,
+    update_submission_status,
+    update_job_status,
+    list_assignments,
 )
 from shared.vectorizer import TextVectorizer
 from datetime import datetime
 import asyncio
+
+from passlib.context import CryptContext
+from jose import jwt, JWTError
+from typing import Optional as _Optional
 
 # Websocket connections per batch (kept in-memory for active sockets)
 ws_connections = {}
@@ -90,6 +101,78 @@ class ResultResponse(BaseModel):
     status: str
     result: dict = None
     error: str = None
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    name: str | None = None
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+# Auth helpers (module-level)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return pwd_context.verify(plain, hashed)
+    except Exception:
+        return False
+
+
+def create_access_token(subject: str) -> str:
+    data = {"sub": subject}
+    token = jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token
+
+
+def decode_access_token(token: str) -> _Optional[str]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload.get("sub")
+    except JWTError:
+        return None
+
+
+def get_current_user(authorization: str | None = Header(default=None)) -> dict:
+    """Resolve the current user from a Bearer JWT."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    token = authorization[len(prefix) :].strip()
+    user_id = decode_access_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
+
+
+
 
 
 @app.get("/health")
@@ -183,8 +266,49 @@ async def queue_stats():
     return {"queue_length": queue_length, "message": f"{queue_length} jobs waiting"}
 
 
+@app.post("/auth/signup", response_model=TokenResponse)
+async def auth_signup(body: SignupRequest):
+    """Create a new user account and return an access token."""
+    # Check existing
+    existing = get_user_by_email(body.email) if db_ready else None
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user_id = str(uuid.uuid4())
+    pwd_hash = hash_password(body.password)
+    created = False
+    if db_ready:
+        try:
+            created = create_user(user_id=user_id, email=body.email, name=body.name, password_hash=pwd_hash)
+        except Exception:
+            created = False
+
+    if not created:
+        raise HTTPException(status_code=500, detail="Failed to create user")
+
+    token = create_access_token(user_id)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def auth_login(body: LoginRequest):
+    """Authenticate user and return access token."""
+    user = get_user_by_email(body.email) if db_ready else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    pwd_hash = user.get("password_hash")
+    if not verify_password(body.password, pwd_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token(user.get("user_id"))
+    return {"access_token": token, "token_type": "bearer"}
+
+
+ 
+
 @app.post("/portal/assignments")
-async def create_assignment(body: dict):
+async def create_assignment(body: dict, current_user: dict = Depends(get_current_user)):
     """Create a new assignment/batch and return batch_id and access_code."""
     name = body.get("name") or body.get("assignment") or "Assignment"
     expected = int(body.get("expected_count", 0) or 0)
@@ -200,10 +324,46 @@ async def create_assignment(body: dict):
                 name=name,
                 access_code=access_code,
                 expected_count=expected,
+                owner_user_id=current_user.get("user_id"),
             )
         except Exception:
             pass
     return {"batch_id": batch_id, "access_code": access_code}
+
+
+@app.get("/portal/assignments")
+async def list_portal_assignments(current_user: dict = Depends(get_current_user)):
+    """List assignments for the dashboard."""
+    assignments = list_assignments() if db_ready else []
+    owned = []
+    other = []
+    for assignment in assignments:
+        if assignment.get("owner_user_id") == current_user.get("user_id"):
+            owned.append(assignment)
+        else:
+            other.append(assignment)
+    return {
+        "owned": owned,
+        "shared": other,
+        "all": assignments,
+    }
+
+
+@app.get("/portal/assignments/{batch_id}")
+async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_current_user)):
+    """Return details for a single assignment, including submissions and matrix presence."""
+    assignment = get_assignment(batch_id) if db_ready else None
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    submissions = get_submissions_by_batch(batch_id) if db_ready else []
+    matrix = get_similarity_matrix(batch_id) if db_ready else {}
+    return {
+        "assignment": assignment,
+        "submissions": submissions,
+        "similarity_matrix_ready": bool(matrix),
+        "submissions_count": len(submissions),
+    }
 
 
 async def broadcast_progress(batch_id: str):
@@ -262,6 +422,7 @@ async def portal_submit(
     file: UploadFile = File(...),
     roll: str = Form(...),
     name: str = Form(None),
+    email: str = Form(None),
     access_code: str = Form(...),
 ):
     """Accept student submission and enqueue a processing job."""
@@ -271,16 +432,20 @@ async def portal_submit(
         raise HTTPException(status_code=400, detail="Invalid access code")
     batch_id = assignment["batch_id"]
 
+    previous_submission = (
+        get_active_submission_by_batch_and_roll(batch_id, roll) if db_ready else None
+    )
+
     # save file
     uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
     os.makedirs(uploads_dir, exist_ok=True)
-    filename = f"{batch_id}_{roll}_{file.filename}"
+    submission_hash = str(uuid.uuid4())
+    filename = f"{batch_id}_{roll}_{submission_hash}_{file.filename}"
     dest = os.path.join(uploads_dir, filename)
     with open(dest, "wb") as f:
         content = await file.read()
         f.write(content)
 
-    submission_hash = str(uuid.uuid4())
     entry = {
         "submission_hash": submission_hash,
         "roll": roll,
@@ -297,9 +462,22 @@ async def portal_submit(
                 batch_id=batch_id,
                 roll=roll,
                 name=name,
+                email=email,
                 filename=filename,
                 file_path=dest,
             )
+            if previous_submission:
+                update_submission_status(previous_submission["submission_id"], "CANCELLED")
+                old_path = previous_submission.get("file_path")
+                if old_path and os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except Exception:
+                        pass
+                try:
+                    update_job_status(previous_submission["submission_id"], JobStatus.CANCELLED.value, worker_id=None)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -321,6 +499,38 @@ async def portal_submit(
         pass
 
     return {"submission_hash": submission_hash, "queued": bool(queued)}
+
+
+@app.post("/portal/submissions/{submission_id}/cancel")
+async def cancel_submission(submission_id: str, current_user: dict = Depends(get_current_user)):
+    """Cancel a submission and delete its file if it is still active."""
+    if not db_ready:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    from shared.database import get_session, Submission
+
+    with get_session() as session:
+        record = session.get(Submission, submission_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Submission not found")
+        if record.status != "ACTIVE":
+            return {"submission_id": submission_id, "status": record.status}
+
+        record.status = "CANCELLED"
+        file_path = record.file_path
+
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+    try:
+        update_job_status(submission_id, JobStatus.CANCELLED.value)
+    except Exception:
+        pass
+
+    return {"submission_id": submission_id, "status": "CANCELLED"}
 
 
 @app.websocket("/portal/ws/{batch_id}")

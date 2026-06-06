@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.models import Job, JobStatus
 from shared.queue_client import QueueClient
 from shared.plagiarism import PlagiarismDetector, compare_with_database
-from shared.database import init_db, store_job_result, update_job_status, get_submissions_by_batch, store_similarity_results
+from shared.database import init_db, store_job_result, update_job_status, get_submissions_by_batch, store_similarity_results, get_job_record
 from shared.vectorizer import TextVectorizer
 from prometheus_client import start_http_server, Counter, Histogram, Gauge
 
@@ -60,6 +60,11 @@ class Worker:
         """
         try:
             print(f"[{WORKER_ID}] Processing job {job.job_id}")
+            if self.db_ready:
+                job_record = get_job_record(job.job_id)
+                if job_record and job_record.get("status") == JobStatus.CANCELLED.value:
+                    print(f"[{WORKER_ID}] Skipping cancelled job {job.job_id}")
+                    return True
             # detect special batch-compute jobs
             try:
                 payload = json.loads(job.text)
@@ -124,6 +129,12 @@ class Worker:
         try:
             print(f"[{WORKER_ID}] Starting batch compute for {batch_id} (job {job.job_id})")
             job_start = time.time()
+
+            if self.db_ready:
+                job_record = get_job_record(job.job_id)
+                if job_record and job_record.get("status") == JobStatus.CANCELLED.value:
+                    print(f"[{WORKER_ID}] Skipping cancelled batch job {job.job_id}")
+                    return True
 
             # Update status
             self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)

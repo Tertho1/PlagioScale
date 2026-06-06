@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, String, Text, create_engine, Float, JSON, Integer
+from sqlalchemy import DateTime, String, Text, create_engine, Float, JSON, Integer, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -57,6 +57,7 @@ class Assignment(Base):
     batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     access_code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
@@ -72,11 +73,27 @@ class Submission(Base):
     batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
     roll: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     filename: Mapped[str] = mapped_column(String(256), nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
     embedding_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ai_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     plagiarism_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+
+class User(Base):
+    """User account for assignment owners and students (minimal)."""
+
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )
@@ -113,10 +130,26 @@ def get_session() -> Session:
 def init_db() -> bool:
     try:
         Base.metadata.create_all(bind=engine)
+        migrate_db()
         return True
     except Exception as exc:
         print(f"⚠ Database init failed: {exc}")
         return False
+
+
+def migrate_db() -> None:
+    """Apply lightweight, idempotent schema migrations for existing databases."""
+    statements = [
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS idx_assignments_owner_user_id ON assignments (owner_user_id)",
+        "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'",
+        "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS email VARCHAR(256)",
+        "DROP INDEX IF EXISTS ux_submissions_batch_roll",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active_batch_roll ON submissions (batch_id, roll) WHERE status = 'ACTIVE'",
+    ]
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def create_job_record(job_id: str, text: str, status: str = "PENDING") -> bool:
@@ -218,7 +251,11 @@ def get_job_record(job_id: str) -> Optional[dict]:
 
 # Assignment and Submission helpers
 def create_assignment(
-    batch_id: str, name: str, access_code: str, expected_count: int = 0
+    batch_id: str,
+    name: str,
+    access_code: str,
+    expected_count: int = 0,
+    owner_user_id: Optional[str] = None,
 ) -> bool:
     try:
         with get_session() as session:
@@ -228,6 +265,7 @@ def create_assignment(
                     name=name,
                     access_code=access_code,
                     expected_count=expected_count,
+                    owner_user_id=owner_user_id,
                 )
             )
         return True
@@ -241,19 +279,33 @@ def create_submission(
     batch_id: str,
     roll: str,
     name: Optional[str],
+    email: Optional[str],
     filename: str,
     file_path: str,
 ) -> bool:
     try:
         with get_session() as session:
+            existing = (
+                session.query(Submission)
+                .filter(
+                    Submission.batch_id == batch_id,
+                    Submission.roll == roll,
+                    Submission.status == "ACTIVE",
+                )
+                .first()
+            )
+            if existing:
+                existing.status = "CANCELLED"
             session.add(
                 Submission(
                     submission_id=submission_id,
                     batch_id=batch_id,
                     roll=roll,
                     name=name,
+                    email=email,
                     filename=filename,
                     file_path=file_path,
+                    status="ACTIVE",
                 )
             )
         return True
@@ -266,14 +318,18 @@ def get_submissions_by_batch(batch_id: str) -> list:
     try:
         with get_session() as session:
             records = (
-                session.query(Submission).filter(Submission.batch_id == batch_id).all()
+                session.query(Submission)
+                .filter(Submission.batch_id == batch_id, Submission.status == "ACTIVE")
+                .all()
             )
             return [
                 {
                     "submission_id": r.submission_id,
                     "roll": r.roll,
                     "name": r.name,
+                    "email": r.email,
                     "file_path": r.file_path,
+                    "status": r.status,
                     "plagiarism_score": r.plagiarism_score,
                     "ai_score": r.ai_score,
                     "embedding_json": r.embedding_json,
@@ -295,6 +351,7 @@ def get_assignment(batch_id: str) -> Optional[dict]:
                 "batch_id": record.batch_id,
                 "name": record.name,
                 "access_code": record.access_code,
+                "owner_user_id": record.owner_user_id,
                 "expected_count": record.expected_count,
                 "created_at": (
                     record.created_at.isoformat() if record.created_at else None
@@ -319,6 +376,7 @@ def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
                 "batch_id": record.batch_id,
                 "name": record.name,
                 "access_code": record.access_code,
+                "owner_user_id": record.owner_user_id,
                 "expected_count": record.expected_count,
                 "created_at": (
                     record.created_at.isoformat() if record.created_at else None
@@ -338,6 +396,7 @@ def list_assignments() -> list:
                     "batch_id": r.batch_id,
                     "name": r.name,
                     "access_code": r.access_code,
+                    "owner_user_id": r.owner_user_id,
                     "expected_count": r.expected_count,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
@@ -346,6 +405,49 @@ def list_assignments() -> list:
     except Exception as exc:
         print(f"⚠ Failed listing assignments: {exc}")
         return []
+
+
+def get_active_submission_by_batch_and_roll(batch_id: str, roll: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = (
+                session.query(Submission)
+                .filter(
+                    Submission.batch_id == batch_id,
+                    Submission.roll == roll,
+                    Submission.status == "ACTIVE",
+                )
+                .first()
+            )
+            if not record:
+                return None
+            return {
+                "submission_id": record.submission_id,
+                "batch_id": record.batch_id,
+                "roll": record.roll,
+                "name": record.name,
+                "email": record.email,
+                "filename": record.filename,
+                "file_path": record.file_path,
+                "status": record.status,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading active submission for {batch_id}/{roll}: {exc}")
+        return None
+
+
+def update_submission_status(submission_id: str, status: str) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(Submission, submission_id)
+            if not record:
+                return False
+            record.status = status
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed updating submission {submission_id}: {exc}")
+        return False
 
 
 def store_submission_embedding(submission_id: str, embedding: list) -> bool:
@@ -411,3 +513,57 @@ def get_similarity_matrix(batch_id: str) -> dict:
     except Exception as exc:
         print(f"⚠ Failed retrieving similarity matrix for batch {batch_id}: {exc}")
         return {}
+
+
+## User helpers
+def create_user(user_id: str, email: str, name: Optional[str], password_hash: str) -> bool:
+    try:
+        with get_session() as session:
+            session.add(
+                User(
+                    user_id=user_id,
+                    email=email,
+                    name=name,
+                    password_hash=password_hash,
+                )
+            )
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed creating user {email}: {exc}")
+        return False
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = session.query(User).filter(User.email == email).first()
+            if not record:
+                return None
+            return {
+                "user_id": record.user_id,
+                "email": record.email,
+                "name": record.name,
+                "password_hash": record.password_hash,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading user by email {email}: {exc}")
+        return None
+
+
+def get_user_by_id(user_id: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = session.get(User, user_id)
+            if not record:
+                return None
+            return {
+                "user_id": record.user_id,
+                "email": record.email,
+                "name": record.name,
+                "password_hash": record.password_hash,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading user {user_id}: {exc}")
+        return None

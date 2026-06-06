@@ -1,17 +1,28 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Dropzone from '../components/Dropzone'
 import '../styles/portal.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const STUDENT_PROFILE_KEY = 'plagioscale_student_profile'
 
 export default function StudentSubmit(){
   const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
   const [roll, setRoll] = useState('')
   const [accessCode, setAccessCode] = useState('')
   const [file, setFile] = useState(null)
   const [status, setStatus] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STUDENT_PROFILE_KEY) || '{}')
+      if (saved.name) setName(saved.name)
+      if (saved.email) setEmail(saved.email)
+      if (saved.roll) setRoll(saved.roll)
+    } catch {}
+  }, [])
 
   async function handleSubmit(e){
     e.preventDefault()
@@ -20,7 +31,12 @@ export default function StudentSubmit(){
     fd.append('file', file)
     fd.append('roll', roll)
     fd.append('name', name)
+    fd.append('email', email)
     fd.append('access_code', accessCode)
+
+    try {
+      localStorage.setItem(STUDENT_PROFILE_KEY, JSON.stringify({ name, email, roll }))
+    } catch {}
 
     setStatus('Uploading...')
     setIsUploading(true)
@@ -48,7 +64,8 @@ export default function StudentSubmit(){
         </Link>
         <div className="nav-links">
           <Link to="/" className="nav-link">Home</Link>
-          <Link to="/teacher" className="nav-link">Teacher Dashboard</Link>
+          <Link to="/auth" className="nav-link">Login / Sign up</Link>
+          <Link to="/dashboard" className="nav-link">Dashboard</Link>
         </div>
       </div>
 
@@ -65,15 +82,9 @@ export default function StudentSubmit(){
         <section className="form-card">
           <div className="section-label">Submission form</div>
           <h2 className="section-title">Upload file for plagiarism checking</h2>
-          <p className="section-copy">Make sure your file is complete before uploading. You can use the access code exactly as provided by your teacher.</p>
+          <p className="section-copy">Use your roll number and the assignment access code. If you want, add your name and email once and they will be remembered on this device for future submissions.</p>
 
           <form onSubmit={handleSubmit} className="form-grid" style={{marginTop:20}}>
-            <div className="field">
-              <label>Student Name</label>
-              <input value={name} onChange={e=>setName(e.target.value)} placeholder="Your full name" />
-              <div className="field-help">Optional, but it helps the teacher identify your submission.</div>
-            </div>
-
             <div className="field">
               <label>Roll Number</label>
               <input value={roll} onChange={e=>setRoll(e.target.value)} placeholder="e.g. 22045" />
@@ -82,6 +93,15 @@ export default function StudentSubmit(){
             <div className="field">
               <label>Assignment Access Code</label>
               <input value={accessCode} onChange={e=>setAccessCode(e.target.value)} placeholder="Enter the code from your teacher" />
+            </div>
+
+            <div className="field">
+              <label>Student details</label>
+              <div className="field-help" style={{marginBottom:10}}>
+                Optional, remembered locally after the first entry.
+              </div>
+              <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name (optional)" style={{marginBottom:10}} />
+              <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email (optional)" type="email" />
             </div>
 
             <div className="field">
@@ -104,7 +124,6 @@ export default function StudentSubmit(){
               <button className="button" type="submit" disabled={isUploading}>
                 {isUploading ? 'Uploading...' : 'Upload submission'}
               </button>
-              <Link to="/teacher" className="button-secondary">Go to Teacher Dashboard</Link>
             </div>
           </form>
 
@@ -114,28 +133,15 @@ export default function StudentSubmit(){
         </section>
 
         <aside className="guide-card">
-          <div className="section-label">Before uploading</div>
-          <h2 className="section-title">What to prepare</h2>
-          <ul className="instruction-list" style={{marginTop:18}}>
-            <li>
-              <span className="instruction-icon">1</span>
-              <div><strong>Get your access code</strong><span>Use the code provided by your teacher for the correct assignment batch.</span></div>
-            </li>
-            <li>
-              <span className="instruction-icon">2</span>
-              <div><strong>Choose the right file</strong><span>Upload only the final PDF or DOCX version of your work.</span></div>
-            </li>
-            <li>
-              <span className="instruction-icon">3</span>
-              <div><strong>Submit once</strong><span>After uploading, keep the returned submission hash for reference.</span></div>
-            </li>
-          </ul>
-
-          <div className="subtle-divider"></div>
-          <div className="info-box">
-            <strong>Need help?</strong>
+          <div className="section-label">Quick note</div>
+          <h2 className="section-title">Simple submission flow</h2>
+          <p className="section-copy">
+            The form stays minimal: roll number, access code, file, and optional identity details for the teacher record.
+          </p>
+          <div className="info-box" style={{marginTop:18}}>
+            <strong>Teacher view</strong>
             <div className="small-copy" style={{marginTop:6}}>
-              If your teacher has not shared an access code, you won’t be able to submit yet.
+              The dashboard will show the roll number together with your saved name and email when available.
             </div>
           </div>
         </aside>
