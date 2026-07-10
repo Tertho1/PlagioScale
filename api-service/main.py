@@ -1,64 +1,102 @@
 """PlagioScale API service."""
 
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    Depends,
-    Header,
-    UploadFile,
-    File,
-    Form,
-    WebSocket,
-    WebSocketDisconnect,
-    Request,
-)
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-import sys
-import os
-import uuid
-from pydantic import BaseModel, EmailStr
-from prometheus_client import make_asgi_app, Counter, Gauge
-import json
+import asyncio
 import csv
 import io
+import json
+import logging
+import os
+import re
+import sys
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from prometheus_client import Counter, Gauge, make_asgi_app
+from pydantic import BaseModel, EmailStr
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
 
 # Add shared to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.models import Job, JobStatus
-from shared.queue_client import QueueClient
+from typing import Optional as _Optional
+
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
+from shared.database import (
+    create_assignment as db_create_assignment,
+)
 from shared.database import (
     create_job_record,
-    get_job_record,
-    init_db,
-    create_assignment as db_create_assignment,
     create_submission,
-    get_submissions_by_batch,
-    store_similarity_results,
-    get_similarity_matrix,
-    store_submission_embedding,
+    create_user,
+    get_active_submission_by_batch_and_roll,
     get_assignment,
     get_assignment_by_access_code,
-    create_user,
+    get_job_record,
+    get_similarity_matrix,
+    get_submissions_by_batch,
     get_user_by_email,
     get_user_by_id,
-    get_active_submission_by_batch_and_roll,
-    update_submission_status,
-    update_job_status,
+    init_db,
     list_assignments,
+    update_job_status,
+    update_submission_status,
 )
+from shared.models import Job, JobStatus
+from shared.queue_client import AsyncQueueClient
+from shared.text_extraction import extract_text
 from shared.vectorizer import TextVectorizer
-from datetime import datetime
-import asyncio
-
-from passlib.context import CryptContext
-from jose import jwt, JWTError
-from typing import Optional as _Optional
 
 # Websocket connections per batch (kept in-memory for active sockets)
 ws_connections = {}
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 app = FastAPI(title="PlagioScale API", version="1.0.0")
+
+
+async def _cleanup_stale_ws():
+    """Periodically remove dead WebSocket connections."""
+    while True:
+        await asyncio.sleep(30)
+        for batch_id in list(ws_connections):
+            dead = set()
+            for ws in list(ws_connections.get(batch_id, set())):
+                try:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                except Exception:
+                    dead.add(ws)
+            for ws in dead:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                ws_connections[batch_id].discard(ws)
+            if not ws_connections.get(batch_id):
+                del ws_connections[batch_id]
+
+
+@app.on_event("startup")
+async def _start_ws_cleanup():
+    asyncio.create_task(_cleanup_stale_ws())
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(429, _rate_limit_exceeded_handler)
 
 # Allow the frontend dev container / static site to call the API from a different origin.
 app.add_middleware(
@@ -84,8 +122,13 @@ QUEUE_LENGTH_GAUGE = Gauge("plagioscale_queue_length", "Current Redis queue leng
 
 # Mount Prometheus ASGI app at /metrics
 app.mount("/metrics", make_asgi_app())
-queue_client = QueueClient()
+queue_client = AsyncQueueClient()
 db_ready = init_db()
+
+
+@app.on_event("startup")
+async def _connect_redis():
+    await queue_client.connect()
 
 
 class SubmitRequest(BaseModel):
@@ -125,9 +168,17 @@ JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
 
+_ENV = os.getenv("ENV", "development")
+if _ENV == "production" and JWT_SECRET == "please-change-this-secret":
+    raise RuntimeError("JWT_SECRET must be changed in production mode")
+
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    try:
+        return pwd_context.hash(password)
+    except Exception as e:
+        logging.error(f"Password hashing failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -138,7 +189,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str) -> str:
-    data = {"sub": subject}
+    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    data = {"sub": subject, "exp": expire}
     token = jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return token
 
@@ -182,21 +234,22 @@ async def health_check():
 
 
 @app.post("/submit")
-async def submit_text(request: SubmitRequest):
+@limiter.limit("30/minute")
+async def submit_text(request: Request, body: SubmitRequest):
     """
     Submit text for plagiarism detection.
 
     Returns job_id for later result retrieval.
     """
-    if not request.text or len(request.text.strip()) < 10:
+    if not body.text or len(body.text.strip()) < 10:
         raise HTTPException(
             status_code=400, detail="Text must be at least 10 characters"
         )
 
     job_id = str(uuid.uuid4())
-    job = Job(job_id=job_id, text=request.text)
+    job = Job(job_id=job_id, text=body.text)
 
-    if queue_client.enqueue_job(job):
+    if await queue_client.enqueue_job(job):
         if db_ready:
             create_job_record(
                 job_id=job_id, text=request.text, status=JobStatus.PENDING.value
@@ -226,12 +279,12 @@ async def get_result(job_id: str):
                 "error": db_record["error"],
             }
 
-    status = queue_client.get_job_status(job_id)
+    status = await queue_client.get_job_status(job_id)
 
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    result = queue_client.get_result(job_id)
+    result = await queue_client.get_result(job_id)
 
     return {"job_id": job_id, "status": status, "result": result}
 
@@ -247,7 +300,7 @@ async def get_status(job_id: str):
                 "status": db_record["status"],
             }
 
-    status = queue_client.get_job_status(job_id)
+    status = await queue_client.get_job_status(job_id)
 
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -258,16 +311,17 @@ async def get_status(job_id: str):
 @app.get("/queue/stats")
 async def queue_stats():
     """Get queue statistics."""
-    queue_length = queue_client.get_queue_length()
+    queue_length = await queue_client.get_queue_length()
     try:
         QUEUE_LENGTH_GAUGE.set(queue_length)
     except Exception:
-        pass
+        logging.warning("Failed to update queue length gauge")
     return {"queue_length": queue_length, "message": f"{queue_length} jobs waiting"}
 
 
 @app.post("/auth/signup", response_model=TokenResponse)
-async def auth_signup(body: SignupRequest):
+@limiter.limit("10/minute")
+async def auth_signup(request: Request, body: SignupRequest):
     """Create a new user account and return an access token."""
     # Check existing
     existing = get_user_by_email(body.email) if db_ready else None
@@ -291,7 +345,8 @@ async def auth_signup(body: SignupRequest):
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def auth_login(body: LoginRequest):
+@limiter.limit("20/minute")
+async def auth_login(request: Request, body: LoginRequest):
     """Authenticate user and return access token."""
     user = get_user_by_email(body.email) if db_ready else None
     if not user:
@@ -305,7 +360,16 @@ async def auth_login(body: LoginRequest):
     return {"access_token": token, "token_type": "bearer"}
 
 
- 
+@app.post("/auth/refresh", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def auth_refresh(request: Request, authorization: str | None = Header(default=None)):
+    """Issue a new access token from a valid existing one."""
+    user = get_current_user(authorization)
+    token = create_access_token(user.get("user_id"))
+    return {"access_token": token, "token_type": "bearer"}
+
+
+
 
 @app.post("/portal/assignments")
 async def create_assignment(body: dict, current_user: dict = Depends(get_current_user)):
@@ -318,16 +382,18 @@ async def create_assignment(body: dict, current_user: dict = Depends(get_current
     ws_connections[batch_id] = set()
     # persist to DB
     if db_ready:
-        try:
-            db_create_assignment(
-                batch_id=batch_id,
-                name=name,
-                access_code=access_code,
-                expected_count=expected,
-                owner_user_id=current_user.get("user_id"),
+        ok = db_create_assignment(
+            batch_id=batch_id,
+            name=name,
+            access_code=access_code,
+            expected_count=expected,
+            owner_user_id=current_user.get("user_id"),
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create assignment — database write failed",
             )
-        except Exception:
-            pass
     return {"batch_id": batch_id, "access_code": access_code}
 
 
@@ -378,11 +444,13 @@ async def broadcast_progress(batch_id: str):
         if assignment:
             total = int(assignment.get("expected_count", 0) or 0)
     except Exception:
+        logging.warning("Failed to get expected count for batch %s", batch_id)
         total = 0
     try:
         subs = get_submissions_by_batch(batch_id) if db_ready else []
         processed = len(subs)
     except Exception:
+        logging.warning("Failed to get submissions for batch %s", batch_id)
         processed = 0
     payload = {"processed": processed, "total": total}
     dead = []
@@ -417,44 +485,90 @@ async def portal_notify(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv", ".py", ".java", ".js", ".ts"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+FILE_MAGIC_BYTES = {
+    ".pdf": b"%PDF",
+    ".docx": b"PK\x03\x04",
+}
+
+
+def _sanitize_filename(filename: str) -> str:
+    return re.sub(r"[^\w\-_.]", "_", filename)
+
+
+def _validate_file(filename: str, content: bytes) -> None:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type '{ext}' is not allowed")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {MAX_FILE_SIZE // (1024 * 1024)} MB)",
+        )
+    expected_magic = FILE_MAGIC_BYTES.get(ext)
+    if expected_magic and not content.startswith(expected_magic):
+        raise HTTPException(status_code=400, detail=f"File content does not match expected type for '{ext}'")
+
+
 @app.post("/portal/submit")
+@limiter.limit("60/minute")
 async def portal_submit(
+    request: Request,
     file: UploadFile = File(...),
     roll: str = Form(...),
     name: str = Form(None),
     email: str = Form(None),
-    access_code: str = Form(...),
+    access_code: str = Form(None),
+    batch_id: str = Form(None),
 ):
-    """Accept student submission and enqueue a processing job."""
-    # find batch by access_code (DB-backed)
-    assignment = get_assignment_by_access_code(access_code) if db_ready else None
-    if not assignment:
-        raise HTTPException(status_code=400, detail="Invalid access code")
-    batch_id = assignment["batch_id"]
+    """Accept student submission and enqueue a processing job.
+
+    Supports two modes:
+    - Anonymous: provide access_code (looks up batch)
+    - Authenticated: provide batch_id directly (JWT header optional, used to attach user_id)
+    """
+    if access_code:
+        assignment = get_assignment_by_access_code(access_code) if db_ready else None
+        if not assignment:
+            raise HTTPException(status_code=400, detail="Invalid access code")
+        batch_id = assignment["batch_id"]
+        user_id = None
+    elif batch_id:
+        assignment = get_assignment(batch_id) if db_ready else None
+        if not assignment:
+            raise HTTPException(status_code=400, detail="Invalid batch_id")
+        # try to extract user from JWT if present
+        try:
+            auth_header = request.headers.get("authorization")
+            if auth_header:
+                from jose import jwt as jose_jwt
+                payload = jose_jwt.decode(auth_header.replace("Bearer ", ""), JWT_SECRET, algorithms=["HS256"])
+                user_id = payload.get("sub")
+            else:
+                user_id = None
+        except Exception:
+            user_id = None
+    else:
+        raise HTTPException(status_code=400, detail="Provide access_code or batch_id")
 
     previous_submission = (
-        get_active_submission_by_batch_and_roll(batch_id, roll) if db_ready else None
+        get_active_submission_by_batch_and_roll(batch_id, roll) if db_ready and access_code else None
     )
 
-    # save file
+    content = await file.read()
+    safe_filename = _sanitize_filename(file.filename or "upload")
+    _validate_file(safe_filename, content)
+
     uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
     os.makedirs(uploads_dir, exist_ok=True)
     submission_hash = str(uuid.uuid4())
-    filename = f"{batch_id}_{roll}_{submission_hash}_{file.filename}"
+    filename = f"{batch_id}_{roll}_{submission_hash}_{safe_filename}"
     dest = os.path.join(uploads_dir, filename)
     with open(dest, "wb") as f:
-        content = await file.read()
         f.write(content)
 
-    entry = {
-        "submission_hash": submission_hash,
-        "roll": roll,
-        "name": name,
-        "filename": filename,
-        "path": dest,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-    # persist submission to DB
     if db_ready:
         try:
             create_submission(
@@ -465,6 +579,7 @@ async def portal_submit(
                 email=email,
                 filename=filename,
                 file_path=dest,
+                user_id=locals().get('user_id'),
             )
             if previous_submission:
                 update_submission_status(previous_submission["submission_id"], "CANCELLED")
@@ -473,30 +588,28 @@ async def portal_submit(
                     try:
                         os.remove(old_path)
                     except Exception:
-                        pass
+                        logging.warning("Failed to remove old file: %s", old_path)
                 try:
                     update_job_status(previous_submission["submission_id"], JobStatus.CANCELLED.value, worker_id=None)
                 except Exception:
-                    pass
+                    logging.warning("Failed to cancel previous job: %s", previous_submission["submission_id"])
         except Exception:
-            pass
+            logging.exception("Failed to persist submission %s", submission_hash)
 
-    # Enqueue job: use submission_hash as job_id and store file path in text field
     job = Job(job_id=submission_hash, text=dest)
-    queued = queue_client.enqueue_job(job)
+    queued = await queue_client.enqueue_job(job)
     if db_ready:
         try:
             create_job_record(
                 job_id=submission_hash, text=dest, status=JobStatus.PENDING.value
             )
         except Exception:
-            pass
+            logging.exception("Failed to create job record %s", submission_hash)
 
-    # broadcast progress to teacher dashboard
     try:
         await broadcast_progress(batch_id)
     except Exception:
-        pass
+        logging.exception("Failed to broadcast progress for batch %s", batch_id)
 
     return {"submission_hash": submission_hash, "queued": bool(queued)}
 
@@ -507,7 +620,7 @@ async def cancel_submission(submission_id: str, current_user: dict = Depends(get
     if not db_ready:
         raise HTTPException(status_code=503, detail="Database not ready")
 
-    from shared.database import get_session, Submission
+    from shared.database import Submission, get_session
 
     with get_session() as session:
         record = session.get(Submission, submission_id)
@@ -523,14 +636,43 @@ async def cancel_submission(submission_id: str, current_user: dict = Depends(get
         try:
             os.remove(file_path)
         except Exception:
-            pass
+            logging.warning("Failed to remove file for cancelled submission %s", submission_id)
 
     try:
         update_job_status(submission_id, JobStatus.CANCELLED.value)
     except Exception:
-        pass
+        logging.warning("Failed to update job status for cancelled submission %s", submission_id)
 
     return {"submission_id": submission_id, "status": "CANCELLED"}
+
+
+@app.get("/portal/my")
+async def my_student_dashboard(current_user: dict = Depends(get_current_user)):
+    """Return the student's own submissions grouped by batch (scoped student dashboard)."""
+    if not db_ready:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    from shared.database import get_submissions_by_user
+
+    user_id = current_user.get("user_id")
+    submissions = get_submissions_by_user(user_id)
+
+    # group by batch and fetch batch details
+    from shared.database import get_assignment
+
+    batches = {}
+    for sub in submissions:
+        bid = sub["batch_id"]
+        if bid not in batches:
+            assignment = get_assignment(bid) or {"name": "Unknown", "id": bid}
+            batches[bid] = {
+                "batch_id": bid,
+                "name": assignment.get("name", "Unknown"),
+                "submissions": [],
+            }
+        batches[bid]["submissions"].append(sub)
+
+    return {"batches": list(batches.values()), "total": len(submissions)}
 
 
 @app.websocket("/portal/ws/{batch_id}")
@@ -574,14 +716,14 @@ async def compute_similarity(batch_id: str):
     payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
     job = Job(job_id=job_id, text=payload)
 
-    queued = queue_client.enqueue_job(job)
+    queued = await queue_client.enqueue_job(job)
     if db_ready:
         try:
             create_job_record(
                 job_id=job_id, text=payload, status=JobStatus.PENDING.value
             )
         except Exception:
-            pass
+            logging.warning("Failed to create job record for batch compute %s", job_id)
 
     if not queued:
         raise HTTPException(status_code=500, detail="Failed to enqueue batch compute")
@@ -600,10 +742,17 @@ async def get_batch_similarity_matrix(batch_id: str):
 
 
 @app.get("/portal/submissions/{batch_id}")
-async def list_submissions(batch_id: str):
-    """List submissions for a batch from DB."""
-    subs = get_submissions_by_batch(batch_id)
-    return {"batch_id": batch_id, "submissions": subs}
+async def list_submissions(batch_id: str, limit: int = 100, offset: int = 0):
+    """List submissions for a batch from DB with pagination."""
+    all_subs = get_submissions_by_batch(batch_id)
+    page = all_subs[offset:offset + limit]
+    return {
+        "batch_id": batch_id,
+        "submissions": page,
+        "total": len(all_subs),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/portal/export/{batch_id}")
@@ -631,6 +780,9 @@ async def export_batch_csv(batch_id: str):
         [
             "Roll Number",
             "Student Name",
+            "Email",
+            "Submission ID",
+            "File Name",
             "Plagiarism Score",
             "AI Score",
             "Max Similarity",
@@ -642,6 +794,9 @@ async def export_batch_csv(batch_id: str):
     for sub in submissions:
         roll = sub.get("roll", "")
         name = sub.get("name", "")
+        email = sub.get("email", "")
+        sub_id = sub.get("submission_id", "")
+        filename = sub.get("filename", "")
         plag_score = sub.get("plagiarism_score", 0) or 0
         ai_score = sub.get("ai_score", 0) or 0
 
@@ -657,6 +812,9 @@ async def export_batch_csv(batch_id: str):
             [
                 roll,
                 name,
+                email,
+                sub_id,
+                filename,
                 f"{plag_score:.2f}",
                 f"{ai_score:.2f}",
                 f"{max_sim:.2f}",
@@ -675,13 +833,27 @@ async def export_batch_csv(batch_id: str):
     )
 
 
+@app.get("/portal/submissions/{batch_id}/{submission_id}/text")
+async def get_submission_text(batch_id: str, submission_id: str):
+    """Extract and return text content of a submission."""
+    subs = get_submissions_by_batch(batch_id) if db_ready else []
+    for sub in subs:
+        if sub.get("submission_id") == submission_id:
+            file_path = sub.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Submission file not found")
+            text = extract_text(file_path)
+            return {"submission_id": submission_id, "text": text, "roll": sub.get("roll")}
+    raise HTTPException(status_code=404, detail="Submission not found")
+
+
 @app.get("/debug/test-extraction/{batch_id}")
 async def debug_extract_batch(batch_id: str):
     """Test endpoint: extract text from all submissions in a batch and test vectorization."""
     from pathlib import Path
-    from shared.vectorizer import TextVectorizer
-    from pypdf import PdfReader
+
     from docx import Document
+    from pypdf import PdfReader
 
     # Get submissions
     subs = get_submissions_by_batch(batch_id)

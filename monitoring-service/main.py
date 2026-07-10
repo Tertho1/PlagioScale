@@ -1,13 +1,12 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import docker
 import redis
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from prometheus_client import make_asgi_app, Gauge
-
+from prometheus_client import Gauge, make_asgi_app
 
 app = FastAPI(title="PlagioScale Monitoring", version="1.0.0")
 
@@ -39,7 +38,7 @@ def health():
 
 @app.get("/api/overview")
 def overview():
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     queue_length = 0
     workers = 0
     completed = 0

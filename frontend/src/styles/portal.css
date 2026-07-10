@@ -61,13 +61,30 @@ a {
   padding: 24px 0 48px;
 }
 
-.top-nav {
+.top-nav, .root-nav {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.root-shell {
+  padding: 20px;
+  min-height: 100%;
+}
+
+.root-nav {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.root-nav a,
+.root-nav-home {
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .brand-mark {
@@ -557,6 +574,73 @@ a {
   padding-top: 18px;
 }
 
+/* Collusion Graph */
+.collusion-graph-root {
+  margin-top: 24px;
+}
+
+.collusion-graph-container {
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+
+.collusion-graph-container canvas {
+  display: block;
+}
+
+/* Blind Review Toggle */
+.blind-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.blind-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.blind-toggle-slider {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--border);
+  border-radius: 11px;
+  transition: background 0.2s;
+}
+
+.blind-toggle-slider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.blind-toggle input:checked + .blind-toggle-slider {
+  background: var(--accent);
+}
+
+.blind-toggle input:checked + .blind-toggle-slider::after {
+  transform: translateX(18px);
+}
+
+.blind-toggle-label {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
 @media (max-width: 980px) {
   .home-hero,
   .dashboard-hero,
@@ -1003,4 +1087,21 @@ a {
   .button-ghost {
     width: 100%;
   }
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-success {
+  background: #d4edda;
+  color: #155724;
+}
+.badge-pending {
+  background: #fff3cd;
+  color: #856404;
 }

@@ -45,12 +45,13 @@ export default function TeacherDashboard() {
       navigate("/auth");
       return;
     }
+    const headers = {
+      "Content-Type": "application/json",
+      ...(await getAuthHeaders()),
+    };
     const res = await fetch(`${API_BASE}/portal/assignments`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...getAuthHeaders(),
-      },
+      headers,
       body: JSON.stringify({ name: assignName, expected_count: 50 }),
     });
     if (!res.ok) {

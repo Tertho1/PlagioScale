@@ -16,5 +16,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false
+  },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/tests/setup.js',
+    include: ['src/tests/**/*.test.{js,jsx}']
+  },
+  esbuild: {
+    jsx: 'automatic',
+    jsxImportSource: 'react'
   }
 })

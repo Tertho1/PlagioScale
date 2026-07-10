@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import AuthPage from './pages/AuthPage'
 import Dashboard from './pages/Dashboard'
 import StudentSubmit from './pages/StudentSubmit'
+import StudentDashboard from './pages/StudentDashboard'
 import './index.css'
 import './styles/portal.css'
 
@@ -55,12 +56,13 @@ function Home(){
 function Root(){
   return (
     <BrowserRouter>
-      <div style={{padding:20, minHeight:'100%'}}>
-        <nav style={{display:'flex', gap:16, marginBottom:24, alignItems:'center'}}>
-          <Link to="/" style={{fontWeight:700, textDecoration:'none'}}>Home</Link>
+      <div className="root-shell">
+        <nav className="root-nav">
+          <Link to="/" className="root-nav-home">Home</Link>
           <Link to="/auth">Login / Sign up</Link>
           <Link to="/dashboard">Dashboard</Link>
           <Link to="/student">Submit</Link>
+          <Link to="/student/dashboard">My Dashboard</Link>
         </nav>
         <Routes>
           <Route path="/" element={<Home/>} />
@@ -68,6 +70,7 @@ function Root(){
           <Route path="/dashboard" element={<Dashboard/>} />
           <Route path="/student" element={<StudentSubmit/>} />
           <Route path="/teacher" element={<Dashboard/>} />
+          <Route path="/student/dashboard" element={<StudentDashboard/>} />
         </Routes>
       </div>
     </BrowserRouter>

@@ -1,61 +1,89 @@
 # PlagioScale
 
-PlagioScale is a cloud-native, microservices-based plagiarism detection platform that demonstrates a production-like architecture suitable for local development and testing.
+Cloud-native, microservices-based plagiarism detection platform.
+Runs entirely locally via Docker Compose — no cloud services or paid APIs.
 
-Key ideas: lightweight API, Redis-backed queue, background workers, and a React + Vite frontend for submissions and teacher dashboards.
-
-Live demo status: the repository includes Docker Compose orchestration that launches the full stack (Postgres, Redis, API, worker, frontend). The project has been verified end-to-end: create an assignment, upload ≥2 submissions, run similarity compute, and fetch the resulting matrix.
-
----
-
-Table of Contents
-
-- Overview
-- Quick Start (Docker)
-- Local Development (Python & Frontend)
-- Architecture
-- Configuration & Environment Variables
-- Troubleshooting
-- What's changed (recent fixes)
-- Contributing
-- License
+```
+API (FastAPI, port 8000) → Redis Queue → Worker(s) (port 8001) → PostgreSQL
+     ↕                                      ↕
+Frontend (React/Vite, port 3050)    Autoscaler (port 8002)
+     ↕
+Monitoring (FastAPI, port 8090) → Prometheus → Grafana
+```
 
 ---
 
-## Overview
-
-PlagioScale implements a k-shingle + cosine similarity pipeline to detect text overlap across student submissions. It is intentionally small and modular to let you iterate on algorithms, scale workers, or integrate monitoring and autoscaling.
-
-## Quick Start (recommended — Docker)
-
-Prerequisites:
-
-- Docker Desktop
-
-Start the full stack:
+## Quick Start (Docker)
 
 ```bash
 docker compose up -d --build
 ```
 
-Services started by the compose file include:
+This starts all 7 services:
 
-- Redis (queue)
-- Postgres (storage)
-- API Service (FastAPI) on port 8000
-- Worker Service (background jobs)
-- Frontend (Vite/React) on port 5173 (dev) or served via Docker
+| Service | Port | Purpose |
+|---|---|---|
+| `api-service` | 8000 | REST API — submissions, auth, batch management, CSV export |
+| `worker-service` | — | Background job processor (plagiarism detection pipeline) |
+| `autoscaler` | 8002 | In-container autoscaler (Docker SDK) |
+| `monitoring-service` | 8090 | Live HTML dashboard + WebSocket metrics |
+| `frontend` (Nginx) | 3050 | React SPA served via Nginx |
+| `postgres` | 5432 | Primary database |
+| `redis` | 6379 | Job queue + metadata store |
+| `prometheus` | 9090 | Metrics scraping |
+| `grafana` | 3000 | Dashboards (admin/admin) |
 
-Smoke-test flow (what to try first):
+### Smoke test
 
-1. Create an assignment via the teacher portal.
-2. Upload at least two submissions (student portal).
-3. Click "Compute similarity" on the teacher dashboard.
-4. Wait for worker completion and view the similarity matrix.
+1. Open http://localhost:3050
+2. Sign up as teacher → create an assignment
+3. Upload ≥2 submissions via the student portal
+4. Click **Compute similarity** on the dashboard
+5. View the similarity matrix, collusion graph, or export CSV
+6. Toggle **Blind Review** to anonymise submission labels
 
-## Local Development (Python backend)
+---
 
-If you prefer running services locally without Docker, create a Python virtual environment and install consolidated dependencies:
+## Architecture
+
+### Services
+
+| Service | Stack | Dependencies |
+|---|---|---|
+| `api-service/` | FastAPI, SQLAlchemy, Redis (async) | Postgres, Redis |
+| `worker-service/` | Python, scikit-learn, pypdf, python-docx | Redis, Postgres (optional) |
+| `autoscaler/` | FastAPI, Docker SDK | Docker socket |
+| `monitoring-service/` | FastAPI, Prometheus client, psutil | Redis |
+| `frontend/` | React 18, Vite, react-force-graph-2d | API |
+| `shared/` | Common models, queue client, vectorizer, text extraction | — |
+
+### Plagiarism pipeline
+
+```
+Submit text/file → API validates → enqueue job in Redis
+  → Worker dequeues → extract text (PDF/DOCX/txt)
+  → TF-IDF vectorize → compare_with_database (cosine similarity)
+  → Store result in Redis + DB → notify API
+```
+
+### Key design decisions
+
+| Decision | Detail |
+|---|---|
+| **Async Redis in API** | `AsyncQueueClient` in `shared/queue_client.py` — non-blocking Redis for the FastAPI event loop |
+| **Sync Redis in Worker** | `QueueClient` — synchronous Redis for the blocking worker process |
+| **Text extraction** | `shared/text_extraction.py` — lazy imports for PDF/DOCX/txt to avoid runtime deps in the API |
+| **Autoscaler** | Two variants: in-container (Docker SDK, preferred) + host subprocess (fallback in `scripts/host_autoscaler.py`) |
+| **JWT auth** | localStorage-based (XSS-vulnerable, acceptable for local demo). Auto-refresh with 5-min expiry margin |
+| **Rate limiting** | slowapi: `/submit` 30/min, `/auth/signup` 10/min, `/auth/login` 20/min, `/portal/submit` 60/min |
+| **File uploads** | Sanitised filenames, extension whitelist + magic-byte check, 10 MB limit |
+| **WebSocket** | Single API instance only — no Redis Pub/Sub for multi-replica yet. Stale connections cleaned every 30s |
+
+---
+
+## Local Development
+
+### Python backend
 
 ```powershell
 python -m venv .venv
@@ -63,81 +91,127 @@ python -m venv .venv
 pip install -r requirementsall.txt
 ```
 
-Caveats:
+You'll need Redis and PostgreSQL running locally, with appropriate env vars set.
 
-- On Windows you may need Visual C++ Build Tools and, for some packages, Rust toolchain. To avoid native builds, match the Python version used by Docker (Python 3.11) or use the provided pinned `requirementsall.txt` which favors wheel-compatible versions.
-- You must run Redis and Postgres locally and export correct env vars (see Configuration below).
-
-## Frontend (React + Vite)
-
-Development:
+### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev      # port 5173, proxies /api → http://localhost:8000
+npm run build    # production build → frontend/dist
+npm run test     # Vitest (10 tests)
 ```
 
-The frontend expects the API base URL to be available via `VITE_API_BASE` (defaults to `http://localhost:8000`).
-
-To build for production:
+### Tests
 
 ```bash
-cd frontend
-npm run build
+# Shared unit tests (35 tests)
+python -m pytest shared/tests -v
+
+# API integration tests (12 tests, mocked deps)
+python -m pytest api-service/tests -v
+
+# Worker integration tests (7 tests, mocked deps)
+python -m pytest worker-service/tests -v
+
+# All Python tests
+python -m pytest api-service/tests worker-service/tests shared/tests -v
+
+# Frontend tests
+cd frontend && npx vitest run
+
+# Lint
+ruff check .
 ```
 
-## Architecture (high level)
+All tests pass on Python 3.14 with mocked dependencies.
 
-User → API (FastAPI) → Redis Queue → Worker(s) → Postgres + results
+### Seed data
 
--+- API: Receives submissions and management actions (create assignment, submit file, request compute).
+```bash
+python scripts/seed_test_data.py                    # 2 batches, 5 students each
+python scripts/seed_test_data.py --batches 3 --students 10
+```
 
-- Queue: Redis list + job metadata for reliable handoff to workers.
-- Workers: dequeue jobs, extract text, vectorize, compute pairwise similarity, store results.
+### Stress testing
 
-## Configuration & Environment Variables
+```bash
+python scripts/stress_test.py 20 5   # 20 jobs, 5 concurrent threads
+```
 
-When running with Docker Compose, the compose file sets sensible defaults. For local runs you'll need to set:
-
-- `DATABASE_URL` or `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
-- `REDIS_HOST` (set to `localhost` for local Redis)
-- `VITE_API_BASE` (frontend dev server)
-
-## Troubleshooting
-
-- If API or worker crashes with `ModuleNotFoundError: No module named 'psycopg'` — ensure service requirements use `psycopg[binary]` and rebuild images: `docker compose up -d --build api-service worker`.
-- If dependency builds fail on Windows, match Docker's Python version (3.11) or install Visual C++ Build Tools and Rust to compile wheels.
-- Frontend shows "Computing..." indefinitely if a compute request was issued with fewer than two submissions — the API now rejects such requests with a clear 400 error. Upload ≥2 submissions before computing.
-
-## What's changed (recent fixes performed)
-
-- Consolidated dependencies into `requirementsall.txt` to simplify venv installs.
-- Added `scripts/setup_env.ps1` to automate local venv creation and installs.
-- Replaced legacy DB driver with `psycopg[binary]` and aligned service `requirements.txt` files.
-- Added server-side preflight validation for compute requests (rejects batches with <2 submissions).
-- Surfaced backend errors to the teacher dashboard to avoid indefinite spinners.
-- Rebuilt Docker images and verified end-to-end smoke test (assignment → upload 2 submissions → compute → matrix).
-
-## Contributing
-
-Contributions are welcome. Please open issues for bugs or feature requests and submit PRs for fixes. Keep changes small and focused — prefer adding tests for new behavior.
-
-Suggested local dev flow:
-
-1. Start Redis and Postgres locally or via Docker Compose.
-2. Run API and worker in your IDE using the `.venv`.
-3. Run frontend with `npm run dev` and set `VITE_API_BASE` to your API.
-
-## License & Contact
-
-This repository is provided as-is for educational and demonstration purposes. Include your preferred license here.
+Includes pre/post autoscaler state comparison.
 
 ---
 
-If you'd like, I can:
+## Environment Variables
 
-- open a PR with this updated README and the removal of `frontend/README.md`;
-- add a short banner in the teacher dashboard reminding users to upload at least two submissions before computing.
+| Variable | Default | Service |
+|---|---|---|
+| `DB_HOST` | `postgres` | API, Worker |
+| `DB_USER` | `plagioscale` | API, Worker |
+| `DB_PASSWORD` | `plagioscale` | API, Worker |
+| `DB_NAME` | `plagioscale` | API, Worker |
+| `REDIS_HOST` | `redis` | API, Worker, Autoscaler |
+| `JWT_SECRET` | `please-change-this-secret` | API |
+| `ENV` | `development` | API (fails fast in `production` with default secret) |
+| `VITE_API_BASE` | `http://localhost:8000` | Frontend |
+| `WORKER_ID` | `worker-default` | Worker |
 
 ---
+
+## Project structure
+
+```
+api-service/          FastAPI REST API (port 8000)
+worker-service/       Background job processor
+autoscaler/           In-container autoscaler (port 8002)
+monitoring-service/   Live monitoring dashboard (port 8090)
+shared/               Python modules (models, queue, vectorizer, plagiarism, text extraction)
+frontend/             React + Vite + Nginx (port 3050)
+scripts/              Utility scripts (stress test, seed data, autoscaler)
+prometheus/           Prometheus scrape config
+grafana/              Pre-provisioned dashboards
+```
+
+## API endpoints
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/health` | GET | — | Health check |
+| `/metrics` | GET | — | Prometheus metrics |
+| `/submit` | POST | — | Submit text for plagiarism check |
+| `/result/{id}` | GET | — | Get job result |
+| `/status/{id}` | GET | — | Get job status |
+| `/queue/stats` | GET | — | Queue length |
+| `/auth/signup` | POST | — | Create account |
+| `/auth/login` | POST | — | Login |
+| `/auth/refresh` | POST | Bearer | Refresh JWT |
+| `/portal/submit` | POST | Bearer | Upload file submission |
+| `/portal/batches` | GET | Bearer | List batches |
+| `/portal/assignments` | GET | Bearer | List assignments |
+| `/portal/submissions/{batch_id}` | GET | Bearer | List submissions (paginated) |
+| `/portal/submissions/{batch_id}/{sub_id}/text` | GET | Bearer | Get extracted text |
+| `/portal/compute/{batch_id}` | POST | Bearer | Trigger similarity computation |
+| `/portal/matrix/{batch_id}` | GET | Bearer | Get similarity matrix |
+| `/portal/export/{batch_id}` | GET | Bearer | Download CSV (roll, name, email, submission_id, filename, scores) |
+| `/ws` | — | — | WebSocket (progress updates) |
+
+---
+
+## What's changed
+
+See `TODO.md` for per-task tracking and `AGENTS.md` for agent context.
+
+Key recent additions:
+- **Phase 4** — Collusion graph, blind review mode, CSV enhanced columns
+- **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 10 frontend tests, seed data script, stress test with autoscaling verification
+- JWT refresh mechanism, rate limiting, file upload validation
+- Matched similarity matrix with row/column order for collusion graph
+- `hash_password()` error handling for passlib/bcrypt compatibility
+
+---
+
+## License
+
+Provided as-is for educational and demonstration purposes.

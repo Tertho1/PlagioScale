@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { clearToken, getAuthHeaders, getStoredEmail, getToken } from "../utils/auth";
+import { useBatchProgress } from "../utils/websocket";
+import BlindReviewToggle from "../components/BlindReviewToggle";
+import CollusionGraph from "../components/CollusionGraph";
 import SimilarityMatrix from "../components/SimilarityMatrix";
 import MatrixViewer from "../components/MatrixViewer";
 import "../styles/portal.css";
@@ -48,6 +51,7 @@ export default function Dashboard() {
   const email = getStoredEmail();
 
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [assignmentName, setAssignmentName] = useState("");
   const [expectedCount, setExpectedCount] = useState(30);
   const [ownedAssignments, setOwnedAssignments] = useState([]);
@@ -60,6 +64,14 @@ export default function Dashboard() {
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [viewer, setViewer] = useState({ open: false, left: null, right: null, similarity: 0 });
+  const [blindReview, setBlindReview] = useState(false);
+
+  const wsProgress = useBatchProgress(selectedId);
+
+  const displayLabels = useMemo(() => {
+    if (!blindReview || !labels.length) return labels;
+    return labels.map((_, idx) => `Submission ${idx + 1}`);
+  }, [blindReview, labels]);
 
   const stats = useMemo(() => {
     const total = ownedAssignments.length + sharedAssignments.length;
@@ -71,12 +83,20 @@ export default function Dashboard() {
     };
   }, [ownedAssignments.length, sharedAssignments.length, submissions.length]);
 
+  useEffect(() => {
+    if (wsProgress.processed > 0 && selected) {
+      loadAssignmentDetails(selectedId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsProgress.processed, wsProgress.total]);
+
   async function loadAssignments() {
     if (!token) return;
     setLoading(true);
+    setError("");
     try {
       const response = await fetch(`${API_BASE}/portal/assignments`, {
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to load assignments");
@@ -85,7 +105,7 @@ export default function Dashboard() {
       const nextSelected = selectedId || (data.owned?.[0]?.batch_id || data.shared?.[0]?.batch_id || "");
       setSelectedId(nextSelected);
     } catch (error) {
-      console.error(error);
+      setError(error.message);
       if (error.message?.includes("authorization") || error.message?.includes("token")) {
         clearToken();
         navigate("/auth");
@@ -98,9 +118,10 @@ export default function Dashboard() {
   async function loadAssignmentDetails(batchId) {
     if (!batchId || !token) return;
     setRefreshing(true);
+    setError("");
     try {
       const response = await fetch(`${API_BASE}/portal/assignments/${batchId}`, {
-        headers: getAuthHeaders(),
+        headers: await getAuthHeaders(),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to load assignment");
@@ -115,7 +136,7 @@ export default function Dashboard() {
         const ids = Object.keys(matrixObj);
         setMatrix(ids.length ? ids.map((i) => ids.map((j) => matrixObj[i][j] || 0)) : null);
 
-        const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}`);
+        const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}?limit=500&offset=0`);
         let labelsMap = {};
         if (sfetch.ok) {
           const sjson = await sfetch.json();
@@ -132,7 +153,7 @@ export default function Dashboard() {
         setLabels([]);
       }
     } catch (error) {
-      console.error(error);
+      setError(error.message);
     } finally {
       setRefreshing(false);
     }
@@ -143,13 +164,15 @@ export default function Dashboard() {
     if (!token) return navigate("/auth");
 
     setCreating(true);
+    setError("");
     try {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(await getAuthHeaders()),
+      };
       const response = await fetch(`${API_BASE}/portal/assignments`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthHeaders(),
-        },
+        headers,
         body: JSON.stringify({ name: assignmentName, expected_count: Number(expectedCount) || 0 }),
       });
       const data = await response.json();
@@ -159,7 +182,7 @@ export default function Dashboard() {
       setSelectedId(data.batch_id);
       await loadAssignmentDetails(data.batch_id);
     } catch (error) {
-      alert(error.message);
+      setError(error.message);
     } finally {
       setCreating(false);
     }
@@ -167,14 +190,50 @@ export default function Dashboard() {
 
   async function computeSimilarity() {
     if (!selectedId) return;
+    setError("");
     const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      alert(data.detail || "Failed to queue compute");
+      setError(data.detail || "Failed to queue compute");
       return;
     }
-    alert("Similarity compute queued. Refresh the assignment after it completes.");
   }
+
+  const handleCellClick = useCallback(async (rowIdx, colIdx, cellValue) => {
+    const ids = Object.keys(Object.fromEntries(submissions.map(s => [s.submission_id, s])));
+    const leftId = ids[rowIdx];
+    const rightId = ids[colIdx];
+    const leftLabel = displayLabels[rowIdx];
+    const rightLabel = displayLabels[colIdx];
+
+    let leftText = "";
+    let rightText = "";
+
+    async function fetchText(subId) {
+      try {
+        const res = await fetch(
+          `${API_BASE}/portal/submissions/${selectedId}/${subId}/text`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return data.text || "";
+        }
+      } catch {
+        // fallback to empty
+      }
+      return "";
+    }
+
+    if (leftId) leftText = await fetchText(leftId);
+    if (rightId) rightText = await fetchText(rightId);
+
+    setViewer({
+      open: true,
+      left: { id: leftId, label: leftLabel, text: leftText },
+      right: { id: rightId, label: rightLabel, text: rightText },
+      similarity: cellValue,
+    });
+  }, [submissions, labels, selectedId]);
 
   useEffect(() => {
     if (!token) {
@@ -225,7 +284,7 @@ export default function Dashboard() {
           <div className="eyebrow">Workspace</div>
           <h1>Manage assignments, review submissions, and drill into each batch.</h1>
           <p>
-            Signed in as <span className="mono">{email || "user"}</span>. Create an assignment, then open any batch to inspect submissions and similarity details.
+            Signed in as <span className="mono">{email || "user"}</span>.
           </p>
         </div>
         <div className="dashboard-hero-stats">
@@ -243,6 +302,19 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
+      {error && (
+        <div className="status-box error" style={{ margin: "0 auto", maxWidth: 960 }}>
+          <strong>Error:</strong> {error}
+        </div>
+      )}
+
+      {wsProgress.processed > 0 && wsProgress.total > 0 && (
+        <div className="status-box success" style={{ margin: "0 auto", maxWidth: 960 }}>
+          Progress: {wsProgress.processed} / {wsProgress.total} submissions processed
+          {wsProgress.processed >= wsProgress.total ? " ✓ Complete" : ""}
+        </div>
+      )}
 
       <section className="dashboard-grid">
         <aside className="dashboard-panel dashboard-panel-list">
@@ -298,6 +370,7 @@ export default function Dashboard() {
               </p>
             </div>
             <div className="detail-actions">
+              <BlindReviewToggle enabled={blindReview} onToggle={() => setBlindReview((v) => !v)} />
               <button className="button-secondary" type="button" onClick={loadAssignments} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
               </button>
@@ -325,12 +398,12 @@ export default function Dashboard() {
               </div>
 
               <div className="submissions-table">
-                {submissions.length > 0 ? submissions.map((submission) => (
+                {submissions.length > 0 ? submissions.map((submission, idx) => (
                   <div key={submission.submission_id} className="submission-row">
                     <div>
-                      <strong>{submission.roll}</strong>
-                      <div className="small-copy">{submission.name || "Name not provided"}</div>
-                      <div className="small-copy">{submission.email || "Email not provided"}</div>
+                      <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
+                      <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
+                      <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
                     </div>
                     <div className="row-meta">
                       <span>{submission.status || "ACTIVE"}</span>
@@ -342,8 +415,10 @@ export default function Dashboard() {
 
               <div className="matrix-card matrix-card-compact">
                 <div className="section-label">Similarity matrix</div>
-                <SimilarityMatrix matrix={matrix} labels={labels} onCellClick={(i, j, cell) => setViewer({ open: true, left: { id: i, label: labels[i], snippet: "" }, right: { id: j, label: labels[j], snippet: "" }, similarity: cell })} />
+                <SimilarityMatrix matrix={matrix} labels={displayLabels} onCellClick={handleCellClick} />
               </div>
+
+              <CollusionGraph matrix={matrix} labels={displayLabels} />
             </>
           ) : (
             <div className="empty-state empty-state-large">

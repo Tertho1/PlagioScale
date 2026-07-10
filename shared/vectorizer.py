@@ -6,9 +6,7 @@ Text vectorizer with graceful fallback:
 This keeps the repo runnable in lightweight environments while allowing
 an upgrade path to embedding-based search later.
 """
-from typing import Dict, List, Tuple
-import os
-import json
+from typing import Dict, List
 
 try:
     import numpy as np
@@ -18,7 +16,6 @@ except Exception:
 TRY_ST_MODEL = False
 try:
     from sentence_transformers import SentenceTransformer
-    import faiss
     TRY_ST_MODEL = True
 except Exception:
     TRY_ST_MODEL = False
@@ -93,7 +90,8 @@ class TextVectorizer:
                     norm1 = np.linalg.norm(v1) + 1e-10
                     for j, id2 in enumerate(ids):
                         v2 = self.embeddings[id2]
-                        score = float(np.dot(v1, v2) / (norm1 * (np.linalg.norm(v2) + 1e-10)))
+                        raw = float(np.dot(v1, v2) / (norm1 * (np.linalg.norm(v2) + 1e-10)))
+                        score = max(0.0, min(1.0, raw))
                         matrix[id1][id2] = score
                 return matrix
 
@@ -113,8 +111,5 @@ class TextVectorizer:
             except Exception as e:
                 print(f"[Vectorizer] TF-IDF compute error: {e}")
 
-        # Last-resort: empty similarities
-        matrix = {i: {j: 0.0 for j in ids} for i in ids}
-        for i in ids:
-            matrix[i][i] = 1.0
-        return matrix
+        # No embedding model and no sklearn — should not happen in normal operation
+        raise RuntimeError("No vectorization backend available (install scikit-learn or sentence-transformers)")

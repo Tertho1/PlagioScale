@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, String, Text, create_engine, Float, JSON, Integer, text
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -41,10 +45,10 @@ class JobRecord(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     worker_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -60,7 +64,7 @@ class Assignment(Base):
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
 
 
@@ -71,6 +75,7 @@ class Submission(Base):
 
     submission_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     roll: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -81,7 +86,7 @@ class Submission(Base):
     ai_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     plagiarism_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
 
 
@@ -95,7 +100,7 @@ class User(Base):
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
 
 
@@ -110,7 +115,7 @@ class SimilarityResult(Base):
     submission_id_2: Mapped[str] = mapped_column(String(64), nullable=False)
     similarity_score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=_utcnow
     )
 
 
@@ -144,6 +149,8 @@ def migrate_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_assignments_owner_user_id ON assignments (owner_user_id)",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS email VARCHAR(256)",
+        "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS idx_submissions_user_id ON submissions (user_id)",
         "DROP INDEX IF EXISTS ux_submissions_batch_roll",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active_batch_roll ON submissions (batch_id, roll) WHERE status = 'ACTIVE'",
     ]
@@ -159,7 +166,7 @@ def create_job_record(job_id: str, text: str, status: str = "PENDING") -> bool:
             if existing:
                 existing.text = text
                 existing.status = status
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = datetime.now(timezone.utc)
                 return True
 
             session.add(JobRecord(job_id=job_id, text=text, status=status))
@@ -181,13 +188,13 @@ def update_job_status(
             if not record:
                 return False
             record.status = status
-            record.updated_at = datetime.utcnow()
+            record.updated_at = datetime.now(timezone.utc)
             if worker_id:
                 record.worker_id = worker_id
             if error:
                 record.error = error
             if status in ("COMPLETED", "FAILED"):
-                record.completed_at = datetime.utcnow()
+                record.completed_at = datetime.now(timezone.utc)
         return True
     except Exception as exc:
         print(f"⚠ Failed updating status for {job_id}: {exc}")
@@ -204,8 +211,8 @@ def store_job_result(
                 return False
             record.result_json = json.dumps(result)
             record.status = "COMPLETED"
-            record.updated_at = datetime.utcnow()
-            record.completed_at = datetime.utcnow()
+            record.updated_at = datetime.now(timezone.utc)
+            record.completed_at = datetime.now(timezone.utc)
             if worker_id:
                 record.worker_id = worker_id
         return True
@@ -282,6 +289,7 @@ def create_submission(
     email: Optional[str],
     filename: str,
     file_path: str,
+    user_id: Optional[str] = None,
 ) -> bool:
     try:
         with get_session() as session:
@@ -292,6 +300,7 @@ def create_submission(
                     Submission.roll == roll,
                     Submission.status == "ACTIVE",
                 )
+                .with_for_update()
                 .first()
             )
             if existing:
@@ -300,6 +309,7 @@ def create_submission(
                 Submission(
                     submission_id=submission_id,
                     batch_id=batch_id,
+                    user_id=user_id,
                     roll=roll,
                     name=name,
                     email=email,
@@ -338,6 +348,34 @@ def get_submissions_by_batch(batch_id: str) -> list:
             ]
     except Exception as exc:
         print(f"⚠ Failed fetching submissions for batch {batch_id}: {exc}")
+        return []
+
+
+def get_submissions_by_user(user_id: str) -> list:
+    try:
+        with get_session() as session:
+            records = (
+                session.query(Submission)
+                .filter(Submission.user_id == user_id, Submission.status == "ACTIVE")
+                .all()
+            )
+            return [
+                {
+                    "submission_id": r.submission_id,
+                    "batch_id": r.batch_id,
+                    "roll": r.roll,
+                    "name": r.name,
+                    "email": r.email,
+                    "filename": r.filename,
+                    "file_path": r.file_path,
+                    "status": r.status,
+                    "plagiarism_score": r.plagiarism_score,
+                    "created_at": str(r.created_at) if r.created_at else None,
+                }
+                for r in records
+            ]
+    except Exception as exc:
+        print(f"Failed fetching submissions for user {user_id}: {exc}")
         return []
 
 
@@ -561,7 +599,6 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
                 "user_id": record.user_id,
                 "email": record.email,
                 "name": record.name,
-                "password_hash": record.password_hash,
                 "created_at": record.created_at.isoformat() if record.created_at else None,
             }
     except Exception as exc:

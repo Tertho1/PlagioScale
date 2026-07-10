@@ -1,11 +1,11 @@
 """
 Shared job schema and models for PlagioScale.
 """
+import json
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
-from dataclasses import dataclass, asdict
-import json
-from datetime import datetime
 
 
 class JobStatus(str, Enum):
@@ -27,28 +27,28 @@ class Job:
     error: Optional[str] = None
     created_at: str = None
     completed_at: Optional[str] = None
-    
+
     def __post_init__(self):
         if self.created_at is None:
-            self.created_at = datetime.utcnow().isoformat()
-    
+            self.created_at = datetime.now(timezone.utc).isoformat()
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return asdict(self)
-    
+
     def to_json(self) -> str:
         """Convert to JSON string."""
         d = self.to_dict()
         d['status'] = self.status.value
         return json.dumps(d)
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'Job':
         """Create Job from dictionary."""
         if isinstance(data['status'], str):
             data['status'] = JobStatus(data['status'])
         return cls(**data)
-    
+
     @classmethod
     def from_json(cls, data: str) -> 'Job':
         """Create Job from JSON string."""

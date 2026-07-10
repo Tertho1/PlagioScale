@@ -59,6 +59,12 @@ redis_data/
 *.sublime-project
 *.sublime-workspace
 
+# Ruff
+.ruff_cache/
+
+# Pytest
+.pytest_cache/
+
 # Temporary
 tmp/
 temp/
@@ -66,15 +72,29 @@ tmp_similarity_test/
 *.tmp
 *.bak
 
+# Archives
+*.7z
+*.zip
+*.tar.gz
+
 # Node (if frontend uses npm)
 node_modules/
 package-lock.json
 yarn.lock
 
+# Frontend build output
+frontend/dist/
+
+# Backups
+backups/
+
 # Database
 *.db
 *.sqlite
 *.sqlite3
+
+# Archives
+*.7z
 
 # IDE settings
 .vscode/settings.json

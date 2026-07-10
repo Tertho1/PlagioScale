@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-import redis, json, time, sys
+import json
+import sys
+import time
+
+import redis
 
 REDIS_HOST = 'localhost'
 REDIS_PORT = 6379

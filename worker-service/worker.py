@@ -1,34 +1,44 @@
 """
 Worker service - processes plagiarism detection jobs from queue.
 """
-import sys
-import os
-import time
 import json
+import os
+import socket
+import sys
+import time
 from pathlib import Path
+
 import requests
-from pypdf import PdfReader
 from docx import Document
+from pypdf import PdfReader
 
 # Add shared to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
+
+from shared.database import (
+    get_job_record,
+    get_submissions_by_batch,
+    init_db,
+    store_job_result,
+    store_similarity_results,
+    update_job_status,
+)
 from shared.models import Job, JobStatus
-from shared.queue_client import QueueClient
 from shared.plagiarism import PlagiarismDetector, compare_with_database
-from shared.database import init_db, store_job_result, update_job_status, get_submissions_by_batch, store_similarity_results, get_job_record
+from shared.queue_client import QueueClient
 from shared.vectorizer import TextVectorizer
-from prometheus_client import start_http_server, Counter, Histogram, Gauge
 
 # Get worker ID from environment
-WORKER_ID = os.getenv('WORKER_ID', 'worker-default')
+WORKER_ID = os.getenv('WORKER_ID') or socket.gethostname()
 STORAGE_DIR = Path('/app/storage')
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Prometheus metrics
-JOBS_PROCESSED = Counter('plagioscale_worker_jobs_processed_total', 'Total jobs processed by worker')
-JOBS_FAILED = Counter('plagioscale_worker_jobs_failed_total', 'Total jobs failed')
-JOB_DURATION = Histogram('plagioscale_worker_job_duration_seconds', 'Job processing time')
-WORKER_QUEUE_LENGTH = Gauge('plagioscale_worker_queue_length', 'Queue length seen by worker')
+# Prometheus metrics (all labelled with worker_id)
+JOBS_PROCESSED = Counter('plagioscale_worker_jobs_processed_total', 'Total jobs processed by worker', labelnames=['worker_id'])
+JOBS_FAILED = Counter('plagioscale_worker_jobs_failed_total', 'Total jobs failed', labelnames=['worker_id'])
+JOB_DURATION = Histogram('plagioscale_worker_job_duration_seconds', 'Job processing time', labelnames=['worker_id'])
+WORKER_QUEUE_LENGTH = Gauge('plagioscale_worker_queue_length', 'Queue length seen by worker', labelnames=['worker_id'])
 
 # Start metrics HTTP server for Prometheus
 try:
@@ -40,14 +50,14 @@ except Exception:
 
 class Worker:
     """Worker process that pulls and processes jobs."""
-    
+
     def __init__(self):
         """Initialize worker."""
         self.queue_client = QueueClient()
         self.db_ready = init_db()
         self.detector = PlagiarismDetector(k=5)
         print(f"[{WORKER_ID}] Worker initialized")
-    
+
     def process_job(self, job: Job) -> bool:
         """
         Process a single job.
@@ -75,23 +85,23 @@ class Worker:
                 # not a batch job, continue with normal processing
                 pass
             job_start_time = time.time()
-            
+
             # Update status to PROCESSING
             self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)
             if self.db_ready:
                 update_job_status(job.job_id, JobStatus.PROCESSING.value, worker_id=WORKER_ID)
-            
+
             # Simulate processing time (can be reduced for testing)
             time.sleep(1)
-            
+
             # Run plagiarism detection against database
             comparison_results = compare_with_database(job.text, self.detector)
-            
+
             # Calculate overall plagiarism score
             scores = [r['plagiarism_score'] for r in comparison_results]
             max_score = max(scores) if scores else 0.0
             avg_score = sum(scores) / len(scores) if scores else 0.0
-            
+
             result = {
                 'max_plagiarism_score': round(max_score, 4),
                 'avg_plagiarism_score': round(avg_score, 4),
@@ -99,28 +109,28 @@ class Worker:
                 'text_length': len(job.text),
                 'algorithm': 'k-shingle + cosine similarity'
             }
-            
+
             # Store result in Redis
             self.queue_client.store_result(job.job_id, result)
             if self.db_ready:
                 store_job_result(job.job_id, result, worker_id=WORKER_ID)
-            
+
             # Save result to file as well (for durability)
             self._save_to_file(job.job_id, result)
-            
+
             # Record metrics
             job_duration = time.time() - job_start_time
-            JOB_DURATION.observe(job_duration)
-            JOBS_PROCESSED.inc()
+            JOB_DURATION.labels(WORKER_ID).observe(job_duration)
+            JOBS_PROCESSED.labels(WORKER_ID).inc()
             print(f"[{WORKER_ID}] ✓ Job {job.job_id} completed (score: {max_score:.4f})")
             return True
-            
+
         except Exception as e:
             print(f"[{WORKER_ID}] ✗ Error processing job {job.job_id}: {e}")
             self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
             if self.db_ready:
                 update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
-            JOBS_FAILED.inc()
+            JOBS_FAILED.labels(WORKER_ID).inc()
             return False
 
 
@@ -184,8 +194,8 @@ class Worker:
             self._save_to_file(job.job_id, result)
 
             # metrics
-            JOBS_PROCESSED.inc()
-            JOB_DURATION.observe(time.time() - job_start)
+            JOBS_PROCESSED.labels(WORKER_ID).inc()
+            JOB_DURATION.labels(WORKER_ID).observe(time.time() - job_start)
             print(f"[{WORKER_ID}] ✓ Batch compute completed for {batch_id} (job {job.job_id})")
             return True
         except Exception as e:
@@ -193,7 +203,7 @@ class Worker:
             self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
             if self.db_ready:
                 update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
-            JOBS_FAILED.inc()
+            JOBS_FAILED.labels(WORKER_ID).inc()
             return False
 
     def _extract_text(self, file_path: str) -> str:
@@ -233,7 +243,7 @@ class Worker:
         # If all specific encodings fail, try with errors='ignore'
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             return f.read()
-    
+
     def _save_to_file(self, job_id: str, result: dict):
         """Save result to local storage."""
         try:
@@ -242,28 +252,28 @@ class Worker:
                 json.dump(result, f, indent=2)
         except Exception as e:
             print(f"[{WORKER_ID}] Warning: Failed to save to file: {e}")
-    
+
     def run(self):
         """Main worker loop - continuously pull and process jobs."""
         print(f"[{WORKER_ID}] Starting worker loop...")
-        
+
         while True:
             try:
                 # Block until job available (5 sec timeout)
                 job = self.queue_client.dequeue_job(timeout=5)
-                
+
                 if job:
                     self.process_job(job)
                 else:
                     # Queue empty, idle
                     queue_len = self.queue_client.get_queue_length()
                     try:
-                        WORKER_QUEUE_LENGTH.set(queue_len)
+                        WORKER_QUEUE_LENGTH.labels(WORKER_ID).set(queue_len)
                     except Exception:
                         pass
                     if queue_len == 0:
                         print(f"[{WORKER_ID}] Idle (queue empty)")
-                    
+
             except KeyboardInterrupt:
                 print(f"[{WORKER_ID}] Shutting down...")
                 break
