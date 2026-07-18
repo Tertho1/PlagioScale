@@ -1,10 +1,7 @@
 """
 Text vectorizer with graceful fallback:
-- Prefer sentence-transformers + faiss for best quality (if installed).
+- Prefer sentence-transformers for best quality (if installed).
 - Fallback to scikit-learn TF-IDF + cosine similarity when heavy deps are not available.
-
-This keeps the repo runnable in lightweight environments while allowing
-an upgrade path to embedding-based search later.
 """
 from typing import Dict, List
 
@@ -34,8 +31,10 @@ class TextVectorizer:
     Methods:
     - add_document(doc_id, text)
     - compute_similarity_matrix() -> Dict[doc1][doc2]=score
+    - _compute_tfidf_matrix() -> individual TF-IDF matrix
+    - _compute_sbert_matrix() -> individual SBERT matrix
     """
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "all-MiniLM-L12-v2"):
         self.use_embeddings = TRY_ST_MODEL
         self.model_name = model_name
         if self.use_embeddings:
@@ -44,7 +43,6 @@ class TextVectorizer:
             except Exception:
                 self.use_embeddings = False
 
-        # storage
         self.doc_texts: Dict[str, str] = {}
         self.doc_ids: List[str] = []
         self.embeddings = {}
@@ -69,47 +67,63 @@ class TextVectorizer:
                 print(f"[Vectorizer] embedding error for {doc_id}: {e}")
         return True
 
-    def compute_similarity_matrix(self) -> Dict[str, Dict[str, float]]:
-        """Compute pairwise similarity between documents.
-
-        Returns a nested dict: {doc1: {doc2: score, ...}, ...}
-        Scores are in [0,1].
-        """
+    def _compute_sbert_matrix(self) -> Dict[str, Dict[str, float]]:
+        if not self.use_embeddings or not np:
+            return {}
         ids = list(self.doc_ids)
         n = len(ids)
         if n == 0:
             return {}
+        ok = self._compute_embeddings()
+        if not ok or len(self.embeddings) != n:
+            return {}
+        matrix = {i: {} for i in ids}
+        for i, id1 in enumerate(ids):
+            v1 = self.embeddings[id1]
+            norm1 = np.linalg.norm(v1) + 1e-10
+            for j, id2 in enumerate(ids):
+                v2 = self.embeddings[id2]
+                raw = float(np.dot(v1, v2) / (norm1 * (np.linalg.norm(v2) + 1e-10)))
+                score = max(0.0, min(1.0, raw))
+                matrix[id1][id2] = score
+        return matrix
 
-        # Embedding path
-        if self.use_embeddings and np:
-            ok = self._compute_embeddings()
-            if ok and len(self.embeddings) == n:
-                matrix = {i: {} for i in ids}
-                for i, id1 in enumerate(ids):
-                    v1 = self.embeddings[id1]
-                    norm1 = np.linalg.norm(v1) + 1e-10
-                    for j, id2 in enumerate(ids):
-                        v2 = self.embeddings[id2]
-                        raw = float(np.dot(v1, v2) / (norm1 * (np.linalg.norm(v2) + 1e-10)))
-                        score = max(0.0, min(1.0, raw))
-                        matrix[id1][id2] = score
-                return matrix
+    def _compute_tfidf_matrix(self) -> Dict[str, Dict[str, float]]:
+        if not SKLEARN_AVAILABLE:
+            return {}
+        ids = list(self.doc_ids)
+        if not ids:
+            return {}
+        texts = [self.doc_texts[i] for i in ids]
+        try:
+            tf = TfidfVectorizer(stop_words='english', max_features=20000)
+            X = tf.fit_transform(texts)
+            sim = cosine_similarity(X)
+            matrix = {}
+            for i, id1 in enumerate(ids):
+                matrix[id1] = {}
+                for j, id2 in enumerate(ids):
+                    matrix[id1][id2] = float(sim[i, j])
+            return matrix
+        except Exception as e:
+            print(f"[Vectorizer] TF-IDF compute error: {e}")
+            return {}
 
-        # Fallback: TF-IDF + cosine similarity
-        if SKLEARN_AVAILABLE:
-            texts = [self.doc_texts[i] for i in ids]
-            try:
-                tf = TfidfVectorizer(stop_words='english', max_features=20000)
-                X = tf.fit_transform(texts)
-                sim = cosine_similarity(X)
-                matrix = {}
-                for i, id1 in enumerate(ids):
-                    matrix[id1] = {}
-                    for j, id2 in enumerate(ids):
-                        matrix[id1][id2] = float(sim[i, j])
-                return matrix
-            except Exception as e:
-                print(f"[Vectorizer] TF-IDF compute error: {e}")
+    def compute_similarity_matrix(self) -> Dict[str, Dict[str, float]]:
+        """Compute pairwise similarity between documents.
 
-        # No embedding model and no sklearn — should not happen in normal operation
+        Prefers SBERT embeddings (semantic) if available,
+        falls back to TF-IDF (lexical).
+
+        Returns a nested dict: {doc1: {doc2: score, ...}, ...}
+        Scores are in [0,1].
+        """
+        if not self.doc_ids:
+            return {}
+        sbert = self._compute_sbert_matrix()
+        if sbert:
+            return sbert
+        tfidf = self._compute_tfidf_matrix()
+        if tfidf:
+            return tfidf
         raise RuntimeError("No vectorization backend available (install scikit-learn or sentence-transformers)")

@@ -112,6 +112,18 @@
 | R5.6 | Home page hero not auth-aware | 🟢 LOW | `frontend/src/pages/Home.jsx` | ✅ Shows different content based on auth state |
 | R5.7 | Update worker tests for new batch compute error flow | 🟢 LOW | `worker-service/tests/test_worker.py` | ✅ Tests verify proper error handling |
 
+### Round 6 — Hybrid Similarity Scorer (SBERT + TF-IDF) ✅
+
+| # | Task | Priority | Files | Status |
+|---|---|---|---|---|
+| R6.1 | Upgrade SBERT model from `all-MiniLM-L6-v2` to `all-MiniLM-L12-v2` | 🟡 MEDIUM | `shared/vectorizer.py` | ✅ 12-layer MiniLM — better semantic quality, ~40MB larger |
+| R6.2 | Enable sentence-transformers path in vectorizer | 🟡 MEDIUM | `shared/vectorizer.py` | ✅ `TRY_ST_MODEL` auto-detected; added `sentence-transformers` to deps |
+| R6.3 | Create `HybridSimilarityScorer` with configurable alpha blending | 🟡 MEDIUM | `shared/similarity_scorer.py` | ✅ Weighted average of TF-IDF (lexical) + SBERT (semantic) |
+| R6.4 | Refactor `TextVectorizer` to expose `_compute_tfidf_matrix()` and `_compute_sbert_matrix()` | 🟢 LOW | `shared/vectorizer.py` | ✅ Split for reuse by hybrid scorer |
+| R6.5 | Update worker batch compute to use `HybridSimilarityScorer` | 🟡 MEDIUM | `worker-service/worker.py` | ✅ Alpha=0.5 default — equal weight to lexical + semantic |
+| R6.6 | Add `sentence-transformers` to worker requirements | 🟢 LOW | `worker-service/requirements.txt` | ✅ |
+| R6.7 | Add 16 tests for `HybridSimilarityScorer` (unit + mocked alpha blending) | 🟢 LOW | `shared/tests/test_similarity_scorer.py` | ✅ Verifies fallback, blending, edge cases |
+
 ---
 
 See `docs/project_plan.md` for full roadmap.

@@ -71,11 +71,11 @@ def test_process_job_short_text(mock_qc_init, mock_init_db):
     {"submission_id": "sub-1", "file_path": "/tmp/fake1.pdf"},
     {"submission_id": "sub-2", "file_path": "/tmp/fake2.pdf"},
 ])
-@patch("worker.TextVectorizer")
+@patch("worker.HybridSimilarityScorer")
 @patch("worker.Worker._extract_text", return_value="This is a test document with sufficient text for similarity computation.")
 @patch("worker.requests.post")
 @patch("worker.store_similarity_results")
-def test_process_batch_compute(mock_store_sim, mock_req_post, mock_extract, mock_vec, mock_subs, mock_qc_init, mock_init_db):
+def test_process_batch_compute(mock_store_sim, mock_req_post, mock_extract, mock_scorer, mock_subs, mock_qc_init, mock_init_db):
     import json
     import worker
 
@@ -83,14 +83,15 @@ def test_process_batch_compute(mock_store_sim, mock_req_post, mock_extract, mock
     mock_qc.get_job_status.return_value = "PENDING"
     mock_qc.get_similarity_matrix.return_value = None
 
-    mock_vec_instance = mock_vec.return_value
-    mock_vec_instance.add_document.side_effect = lambda doc_id, text: (
-        mock_vec_instance.doc_texts.__setitem__(doc_id, text) or
-        mock_vec_instance.doc_ids.append(doc_id) or True
+    mock_scorer_instance = mock_scorer.return_value
+    mock_scorer_instance.add_document.side_effect = lambda doc_id, text: (
+        mock_scorer_instance.doc_texts.__setitem__(doc_id, text) or
+        mock_scorer_instance.doc_ids.append(doc_id) or True
     )
-    mock_vec_instance.doc_ids = []
-    mock_vec_instance.doc_texts = {}
-    mock_vec_instance.compute_similarity_matrix.return_value = {"matrix": [[0.0, 0.5], [0.5, 0.0]]}
+    mock_scorer_instance.doc_ids = []
+    mock_scorer_instance.doc_texts = {}
+    mock_scorer_instance.compute_similarity_matrix.return_value = {"matrix": [[0.0, 0.5], [0.5, 0.0]]}
+    mock_scorer_instance.get_algorithm_label.return_value = "Hybrid (alpha=0.5) | SBERT: test | TF-IDF"
 
     w = worker.Worker()
     batch_id = "batch-001"
@@ -140,10 +141,10 @@ def test_process_cancelled_job(mock_getrecord, mock_qc_init, mock_init_db):
     {"submission_id": "sub-1", "file_path": "/tmp/nonexistent1.pdf"},
     {"submission_id": "sub-2", "file_path": "/tmp/nonexistent2.pdf"},
 ])
-@patch("worker.TextVectorizer")
+@patch("worker.HybridSimilarityScorer")
 @patch("worker.requests.post")
 @patch("worker.store_similarity_results")
-def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_req_post, mock_vec, mock_subs, mock_qc_init, mock_init_db):
+def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_req_post, mock_scorer, mock_subs, mock_qc_init, mock_init_db):
     """Batch compute should FAIL when all documents fail text extraction."""
     import json
     import worker
@@ -151,8 +152,8 @@ def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_re
     mock_qc = mock_qc_init.return_value
     mock_qc.get_job_status.return_value = "PENDING"
 
-    mock_vec_instance = mock_vec.return_value
-    mock_vec_instance.doc_ids = []
+    mock_scorer_instance = mock_scorer.return_value
+    mock_scorer_instance.doc_ids = []
 
     w = worker.Worker()
     batch_id = "batch-001"

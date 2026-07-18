@@ -22,6 +22,7 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | JWT storage | localStorage (XSS-vulnerable — acceptable for local demo) |
 | WebSocket scaling | Single API instance only — no Redis Pub/Sub for multi-replica yet |
 | Resource limits | Set on all services in docker-compose.yml (Phase 0) |
+| Similarity engine | Hybrid `HybridSimilarityScorer` — TF-IDF (lexical) + SBERT `all-MiniLM-L12-v2` (semantic), blended via configurable alpha (default 0.5) |
 
 ## Known Bugs (audit July 2026)
 

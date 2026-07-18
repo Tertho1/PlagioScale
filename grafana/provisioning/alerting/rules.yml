@@ -1,0 +1,58 @@
+apiVersion: 1
+groups:
+  - name: PlagioScale Alerts
+    interval: 30s
+    rules:
+      - alert: HighQueueDepth
+        expr: plagioscale_monitor_queue_length > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Queue depth is {{ $value }} (threshold: 20 for 2m)
+          description: Job queue in Redis has {{ $value }} pending jobs, indicating workers may be falling behind.
+
+      - alert: CriticalQueueDepth
+        expr: plagioscale_monitor_queue_length > 50
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Queue depth critically high at {{ $value }}
+          description: More than 50 jobs queued — autoscaler may not be keeping up. Consider increasing MAX_WORKERS.
+
+      - alert: NoWorkersRunning
+        expr: plagioscale_monitor_workers == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: No workers running
+          description: All worker processes are down. No jobs can be processed.
+
+      - alert: JobFailures
+        expr: increase(plagioscale_worker_jobs_failed_total[5m]) > 0
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: Job failures detected in last 5 minutes
+          description: "{{ $value }} job(s) failed in the last 5 minutes. Check worker logs for details."
+
+      - alert: HighJobDuration
+        expr: avg(plagioscale_worker_job_duration_seconds) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Average job duration > 60s
+          description: Jobs are taking {{ $value }}s on average. Consider scaling up or investigating bottlenecks.
+
+      - alert: AutoscalerInactive
+        expr: increase(plagioscale_autoscaler_scale_events_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: Autoscaler inactive for 10 minutes
+          description: No scale events in the last 10 minutes. Verify autoscaler is running.

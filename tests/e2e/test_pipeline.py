@@ -178,3 +178,78 @@ def test_anonymous_submission_flow():
     )
     assert resp.status_code == 200, f"Anonymous submit failed: {resp.text}"
     assert "submission_hash" in resp.json()
+
+
+@pytest.mark.e2e
+def test_hybrid_scorer_output(auth_headers):
+    """Verify the hybrid scorer produces algorithm label and correct score ranges."""
+    # 1. Create assignment
+    resp = requests.post(
+        _url("/portal/assignments"),
+        json={"name": "Hybrid Scorer E2E", "expected_count": 3},
+        headers=auth_headers,
+        timeout=5,
+    )
+    assert resp.status_code == 200
+    batch_id = resp.json()["batch_id"]
+
+    # 2. Upload: 2 near-identical docs + 1 different doc
+    docs = [
+        ("similar1.txt", b"The quick brown fox jumps over the lazy dog near the riverbank."),
+        ("similar2.txt", b"The quick brown fox leaps over the lazy canine by the river."),
+        ("different.txt", b"Quantum physics deals with subatomic particles and wave functions."),
+    ]
+    submission_ids = []
+    for filename, content in docs:
+        resp = requests.post(
+            _url("/portal/submit"),
+            headers=auth_headers,
+            files={"file": (filename, content, "text/plain")},
+            data={"batch_id": batch_id, "roll": filename.replace(".txt", ""), "name": filename.replace(".txt", " Student")},
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"Upload {filename} failed: {resp.text}"
+        submission_ids.append(resp.json()["submission_hash"])
+
+    # 3. Compute similarity
+    resp = requests.post(
+        _url(f"/portal/compute-similarity/{batch_id}"),
+        headers=auth_headers,
+        timeout=5,
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    # 4. Poll for job status to see algorithm label
+    deadline = time.time() + 30
+    algorithm = None
+    while time.time() < deadline:
+        resp = requests.get(_url(f"/status/{job_id}"), timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("result") and data["result"].get("algorithm"):
+                algorithm = data["result"]["algorithm"]
+                break
+        time.sleep(2)
+
+    assert algorithm is not None, "Algorithm label not found in job result"
+    assert "Hybrid" in algorithm, f"Expected hybrid algorithm, got: {algorithm}"
+    assert "alpha=0.5" in algorithm, f"Expected alpha=0.5 in label, got: {algorithm}"
+
+    # 5. Verify matrix scores via similarity endpoint
+    resp = requests.get(
+        _url(f"/portal/similarity-matrix/{batch_id}"),
+        headers=auth_headers,
+        timeout=5,
+    )
+    assert resp.status_code == 200
+    matrix = resp.json()["matrix"]
+
+    # Similar docs should have higher score than different docs
+    sid_sim1, sid_sim2, sid_diff = submission_ids
+    similar_score = matrix[sid_sim1][sid_sim2]
+    diff_score = matrix[sid_sim1][sid_diff]
+    assert similar_score > diff_score, \
+        f"Expected similar docs ({similar_score}) > different docs ({diff_score})"
+    assert 0.0 <= similar_score <= 1.0
+    assert 0.0 <= diff_score <= 1.0

@@ -27,6 +27,7 @@ from shared.database import (
 from shared.models import Job, JobStatus
 from shared.plagiarism import PlagiarismDetector, compare_with_database
 from shared.queue_client import QueueClient
+from shared.similarity_scorer import HybridSimilarityScorer
 from shared.vectorizer import TextVectorizer
 
 # Get worker ID from environment
@@ -156,7 +157,7 @@ class Worker:
             if not submissions:
                 raise RuntimeError('No submissions found for batch')
 
-            vec = TextVectorizer()
+            vec = HybridSimilarityScorer(alpha=0.5)
             api_host = os.getenv('API_HOST', 'api-service')
             api_port = os.getenv('API_PORT', '8000')
             notify_url = f'http://{api_host}:{api_port}/portal/notify'
@@ -192,7 +193,7 @@ class Worker:
                 'num_submissions': len(submissions),
                 'documents_processed': len(vec.doc_ids),
                 'failed_files': failed_files,
-                'algorithm': 'TF-IDF cosine (with file text extraction)',
+                'algorithm': vec.get_algorithm_label(),
             }
             # store job result
             self.queue_client.store_result(job.job_id, result)
