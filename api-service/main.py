@@ -233,7 +233,7 @@ async def health_check():
 
 
 @app.post("/submit")
-@limiter.limit("30/minute")
+@limiter.limit("100/minute")
 async def submit_text(request: Request, body: SubmitRequest):
     """
     Submit text for plagiarism detection.
@@ -251,7 +251,7 @@ async def submit_text(request: Request, body: SubmitRequest):
     if await queue_client.enqueue_job(job):
         if db_ready:
             create_job_record(
-                job_id=job_id, text=request.text, status=JobStatus.PENDING.value
+                job_id=job_id, text=body.text, status=JobStatus.PENDING.value
             )
         REQUESTS_SUBMITTED.inc()
         return {

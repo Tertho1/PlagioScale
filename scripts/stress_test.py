@@ -55,24 +55,22 @@ def check_result(job_id: str) -> dict:
 
 
 def check_autoscaler_state():
-    """Query the autoscaler for current state and estimate."""
-    endpoints = [
-        ("http://localhost:8002/status", "In-container autoscaler"),
-        ("http://localhost:8001/status", "Worker (port 8001)"),
-    ]
+    """Query the monitoring service for current cluster state."""
     results = {}
-    for url, name in endpoints:
-        try:
-            resp = requests.get(url, timeout=3)
-            if resp.ok:
-                results[name] = resp.json()
-                print(f"  \u2139 {name}: {resp.status_code} OK")
-            else:
-                print(f"  \u26a0 {name}: {resp.status_code}")
-        except requests.ConnectionError:
-            print(f"  \u2014 {name}: not reachable")
-        except Exception as e:
-            print(f"  \u26a0 {name}: {e}")
+    try:
+        resp = requests.get("http://localhost:8090/api/overview", timeout=3)
+        if resp.ok:
+            data = resp.json()
+            results["monitor"] = {
+                "workers": data.get("workers", 0),
+                "queue_length": data.get("queue_length", 0),
+                "jobs": data.get("jobs", {}),
+            }
+            print(f"  \u2139 Monitor: {resp.status_code} OK ({data.get('workers', '?')} workers, {data.get('queue_length', '?')} queued)")
+        else:
+            print(f"  \u26a0 Monitor: {resp.status_code}")
+    except Exception as e:
+        print(f"  \u2014 Monitor: not reachable ({e})")
     return results
 
 
@@ -182,8 +180,8 @@ def _report_scale_change(pre, post):
     for key in pre:
         before = pre.get(key, {})
         after = post.get(key, {})
-        workers_before = before.get("workers", before.get("active_scales", "?"))
-        workers_after = after.get("workers", after.get("active_scales", "?"))
+        workers_before = before.get("workers", "?")
+        workers_after = after.get("workers", "?")
         if workers_before != workers_after:
             print(f"    \u2191 {key}: {workers_before} \u2192 {workers_after} workers")
         else:

@@ -139,7 +139,7 @@ class QueueBasedAutoscaler:
 
     def scale_workers(self, target_count: int) -> bool:
         """
-        Scale workers to target count using docker-compose.
+        Scale workers to target count using Docker API.
 
         Args:
             target_count: Number of worker instances to run
@@ -157,10 +157,10 @@ class QueueBasedAutoscaler:
         try:
             self.log(f"↻ Scaling workers: {self.current_worker_count} → {target_count}")
 
-            # Desired state: scale by adjusting container replicas
-            # For Docker Compose, we scale by modifying the service desired count
+            # Get all worker containers for this project
             containers = self.docker_client.containers.list(
-                filters={'label': 'com.docker.compose.service=worker'}
+                filters={'label': 'com.docker.compose.service=worker'},
+                all=True
             )
 
             current_running = len([c for c in containers if c.status == 'running'])
@@ -173,35 +173,53 @@ class QueueBasedAutoscaler:
                 # Get the first worker container as template
                 if containers:
                     template = containers[0]
-                    image = template.image
+                    # FIX 1: Use Config.Image (the actual image reference), not .image (the hash)
+                    image_ref = template.attrs['Config']['Image']
                     env = template.attrs['Config']['Env']
                     networks = template.attrs['NetworkSettings']['Networks']
                     network_name = list(networks.keys())[0] if networks else None
+                    mounts = template.attrs['Mounts']
 
                     for i in range(diff):
                         worker_num = current_running + i + 1
                         env_dict = dict([e.split('=', 1) for e in env if '=' in e])
                         env_dict['WORKER_ID'] = f'worker-{worker_num}'
 
-                        run_kwargs = {
-                            'image': image,
-                            'name': f'{self.project_name}-worker-{worker_num}',
-                            'environment': env_dict,
-                            'restart_policy': {'Name': 'unless-stopped'},
-                            'detach': True,
-                            'labels': {
-                                'com.docker.compose.project': self.project_name,
-                                'com.docker.compose.service': 'worker',
-                            }
-                        }
-                        if network_name:
-                            run_kwargs['network'] = network_name
+                        # FIX 2: Reconstruct volumes from template container
+                        volumes_dict = {}
+                        for mount in mounts:
+                            if mount['Type'] == 'bind':
+                                volumes_dict[mount['Source']] = {
+                                    'bind': mount['Destination'],
+                                    'mode': 'rw'
+                                }
+                            elif mount['Type'] == 'volume':
+                                volumes_dict[mount['Name']] = {
+                                    'bind': mount['Destination'],
+                                    'mode': 'rw'
+                                }
 
-                        self.docker_client.containers.run(
-                            image,
-                            **{k: v for k, v in run_kwargs.items() if k != 'image'}
-                        )
-                        self.log(f"  ✓ Started worker-{worker_num}")
+                        try:
+                            # FIX 3: Pass image as first positional arg, use 'network' kwarg correctly
+                            self.docker_client.containers.run(
+                                image_ref,
+                                name=f'{self.project_name}-worker-{worker_num}',
+                                environment=env_dict,
+                                restart_policy={'Name': 'unless-stopped'},
+                                detach=True,
+                                labels={
+                                    'com.docker.compose.project': self.project_name,
+                                    'com.docker.compose.service': 'worker',
+                                },
+                                network=network_name,
+                                volumes=volumes_dict if volumes_dict else None,
+                                mem_limit='512m',
+                                memswap_limit='512m',
+                            )
+                            self.log(f"  ✓ Started worker-{worker_num}")
+                        except Exception as e:
+                            self.log(f"  ✗ Failed to start worker-{worker_num}: {e}")
+                            self.publish_event("error", f"Failed to start worker-{worker_num}: {e}")
 
             elif target_count < current_running:
                 # Scale down: stop extra containers
