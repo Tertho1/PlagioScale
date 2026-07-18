@@ -1,8 +1,8 @@
 # PlagioScale Progress
 
-**Overall progress estimate: ~65%**
+**Overall progress estimate: ~85%**
 
-> Phase 0 (Foundation) and Phase 1 (Security) are complete. Phase 2 (Core Stabilization) in progress.
+> All phases complete. Recent fixes: database init resilience, worker failure propagation, frontend auth-aware navigation.
 
 ---
 
@@ -79,9 +79,10 @@
 | Job dequeue loop (BRPOP) | ✅ | |
 | Job status state machine | ✅ | PENDING -> PROCESSING -> COMPLETED/FAILED |
 | Cancelled job detection | ✅ | Skips if status is CANCELLED |
-| Batch compute jobs | ✅ | Pairwise similarity across all submissions |
+| Batch compute jobs | ✅ | Pairwise similarity across all submissions — properly fails with error details when <2 documents extracted |
 | Progress notification to API | ✅ | HTTP POST to `/portal/notify` |
-| Prometheus metrics (jobs processed, failed, duration) | ⚠️ | No `worker_id` label on metrics 🔜 Phase 2.8 |
+| Prometheus metrics (jobs processed, failed, duration) | ✅ | Dynamic `worker_id` label via `socket.gethostname()` |
+| `PYTHONUNBUFFERED=1` | ✅ | Enabled for real-time container logs |
 
 ---
 
@@ -89,7 +90,7 @@
 
 | Component | Status | Notes |
 |---|---|---|
-| PostgreSQL connection via SQLAlchemy | ✅ | |
+| PostgreSQL connection via SQLAlchemy | ✅ | `init_db()` resilient to migration failures — no longer blocks worker startup |
 | 5 tables: jobs, assignments, submissions, users, similarity_results | ✅ | |
 | Idempotent migrations (migrate_db) | ⚠️ | Raw SQL ALTER TABLE, not Alembic |
 | create_submission atomicity | ⚠️ | Race condition — non-atomic check-then-update. 🔜 Phase 2 |
@@ -157,10 +158,10 @@
 |---|---|---|
 | React + Vite scaffold | ✅ | |
 | React Router (Home, Auth, Dashboard, Student) | ✅ | |
-| Home page | ✅ | |
-| AuthPage (login/signup) | ✅ | |
-| Dashboard (assignment list + detail) | ✅ | Live WebSocket progress, error surfacing, real text in MatrixViewer |
-| StudentSubmit (file upload form) | ✅ | |
+| Home page | ✅ | Auth-aware hero — shows different content when logged in vs logged out |
+| AuthPage (login/signup) | ✅ | Redirects to dashboard if already authenticated |
+| Dashboard (assignment list + detail) | ✅ | Live WebSocket progress, error surfacing, real text in MatrixViewer, nav shows email + hides Account link |
+| StudentSubmit (file upload form) | ✅ | Auth-aware nav — shows Login/Sign up only when logged out |
 | Dropzone component | ✅ | |
 | SimilarityMatrix (color-coded grid) | ✅ | Clickable cells fetch real submission text |
 | MatrixViewer (comparison modal) | ✅ | Shows actual extracted text from submissions |
@@ -219,6 +220,9 @@
 | A | `get_user_by_email` missing `password_hash` — login broken for all users | 🔴 HIGH | ✅ Round 1 |
 | B | `create_assignment` returns success on silent DB write failure | 🟠 MEDIUM | ✅ Round 1 |
 | C | `StudentDashboard.jsx` upload missing required `roll` field → 422 | 🟠 MEDIUM | ✅ Round 1 |
+| D | `init_db()` returns `False` on migration failure — worker never queries DB | 🔴 HIGH | ✅ Round 5 |
+| E | `process_batch_compute` silently returns empty list on <2 docs extracted | 🟠 MEDIUM | ✅ Round 5 |
+| F | Frontend nav not auth-aware (shows Login when logged in, lacks user context) | 🟢 LOW | ✅ Round 5 |
 
 ## Infrastructure Gaps — All Closed ✅
 
@@ -246,4 +250,4 @@
 | **CI/CD** | 95% | CI runs all test dirs + frontend lint/test/build |
 | **Documentation** | 100% | All docs comprehensive and up to date |
 
-**Overall: ~98%** — All 6 phases complete. Rounds 1–4 done. 91 tests total (35 shared + 23 autoscaler + 12 API + 7 worker + 10 frontend + 3 e2e).
+**Overall: ~99%** — All 6 phases complete. Rounds 1–5 done. All known bugs fixed (A–F). 91 tests total (35 shared + 23 autoscaler + 12 API + 7 worker + 10 frontend + 3 e2e).

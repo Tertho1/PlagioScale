@@ -87,6 +87,35 @@ a {
   text-decoration: none;
 }
 
+.root-nav-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.root-nav-links a {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.root-nav-logout {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+  padding: 6px 10px;
+}
+
+.nav-email {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+  padding: 0 4px;
+  opacity: 0.7;
+}
+
 .brand-mark {
   display: inline-flex;
   align-items: center;

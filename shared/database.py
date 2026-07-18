@@ -135,11 +135,14 @@ def get_session() -> Session:
 def init_db() -> bool:
     try:
         Base.metadata.create_all(bind=engine)
-        migrate_db()
-        return True
     except Exception as exc:
-        print(f"⚠ Database init failed: {exc}")
+        print(f"⚠ Database init failed (table creation): {exc}")
         return False
+    try:
+        migrate_db()
+    except Exception as exc:
+        print(f"⚠ Database migration failed (non-fatal): {exc}")
+    return True
 
 
 def migrate_db() -> None:
@@ -152,11 +155,58 @@ def migrate_db() -> None:
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS idx_submissions_user_id ON submissions (user_id)",
         "DROP INDEX IF EXISTS ux_submissions_batch_roll",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active_batch_roll ON submissions (batch_id, roll) WHERE status = 'ACTIVE'",
     ]
     with engine.begin() as connection:
         for statement in statements:
-            connection.execute(text(statement))
+            try:
+                connection.execute(text(statement))
+            except Exception as exc:
+                print(f"⚠ Migration statement skipped: {exc}")
+
+    # unique partial index — handle duplicates gracefully
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active_batch_roll "
+                    "ON submissions (batch_id, roll) WHERE status = 'ACTIVE'"
+                )
+            )
+    except Exception as exc:
+        # duplicates exist — remove them and retry
+        print(f"⚠ Removing duplicate submissions for unique index: {exc}")
+        with get_session() as session:
+            dups = session.execute(
+                text(
+                    "SELECT batch_id, roll FROM submissions WHERE status = 'ACTIVE' "
+                    "GROUP BY batch_id, roll HAVING COUNT(*) > 1"
+                )
+            ).fetchall()
+            for batch_id, roll in dups:
+                rows = session.execute(
+                    text(
+                        "SELECT submission_id FROM submissions "
+                        "WHERE batch_id = :b AND roll = :r AND status = 'ACTIVE' "
+                        "ORDER BY created_at DESC"
+                    ),
+                    {"b": batch_id, "r": roll},
+                ).fetchall()
+                # keep the newest, cancel the rest
+                for row in rows[1:]:
+                    session.execute(
+                        text("UPDATE submissions SET status = 'CANCELLED' WHERE submission_id = :sid"),
+                        {"sid": row[0]},
+                    )
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS ux_submissions_active_batch_roll "
+                        "ON submissions (batch_id, roll) WHERE status = 'ACTIVE'"
+                    )
+                )
+        except Exception as exc2:
+            print(f"⚠ Could not create unique index even after cleanup: {exc2}")
 
 
 def create_job_record(job_id: str, text: str, status: str = "PENDING") -> bool:

@@ -63,6 +63,7 @@ export default function Dashboard() {
   const [submissions, setSubmissions] = useState([]);
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [computing, setComputing] = useState(false);
   const [viewer, setViewer] = useState({ open: false, left: null, right: null, similarity: 0 });
   const [blindReview, setBlindReview] = useState(false);
 
@@ -191,11 +192,40 @@ export default function Dashboard() {
   async function computeSimilarity() {
     if (!selectedId) return;
     setError("");
-    const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST" });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      setError(data.detail || "Failed to queue compute");
-      return;
+    setComputing(true);
+    try {
+      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.detail || "Failed to queue compute");
+        setComputing(false);
+        return;
+      }
+      const jobId = data.job_id;
+      let status = null;
+      let jobError = null;
+      for (let i = 0; i < 300; i++) {
+        try {
+          const sres = await fetch(`${API_BASE}/status/${jobId}`);
+          if (sres.ok) {
+            const sjson = await sres.json();
+            status = sjson.status;
+            jobError = sjson.error || null;
+            if (status === "COMPLETED" || status === "FAILED") break;
+          }
+        } catch (e) { /* ignore transient */ }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (status !== "COMPLETED") {
+        setError(jobError || "Compute failed or timed out");
+        setComputing(false);
+        return;
+      }
+      await loadAssignmentDetails(selectedId);
+    } catch (e) {
+      setError(e?.message || "Compute failed");
+    } finally {
+      setComputing(false);
     }
   }
 
@@ -264,8 +294,8 @@ export default function Dashboard() {
         </Link>
         <div className="nav-links nav-links-modern">
           <Link to="/" className="nav-link nav-link-modern">Home</Link>
-          <Link to="/auth" className="nav-link nav-link-modern">Account</Link>
           <Link to="/student" className="nav-link nav-link-modern">Submit</Link>
+          <span className="nav-link nav-link-modern nav-email">{email}</span>
           <button
             type="button"
             className="nav-link nav-link-modern"
@@ -371,11 +401,11 @@ export default function Dashboard() {
             </div>
             <div className="detail-actions">
               <BlindReviewToggle enabled={blindReview} onToggle={() => setBlindReview((v) => !v)} />
-              <button className="button-secondary" type="button" onClick={loadAssignments} disabled={refreshing}>
+              <button className="button-secondary" type="button" onClick={() => selectedId && loadAssignmentDetails(selectedId)} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
               </button>
-              <button className="button" type="button" onClick={computeSimilarity} disabled={!selectedId}>
-                Compute similarity
+              <button className="button" type="button" onClick={computeSimilarity} disabled={!selectedId || computing}>
+                {computing ? "Computing..." : "Compute similarity"}
               </button>
             </div>
           </div>

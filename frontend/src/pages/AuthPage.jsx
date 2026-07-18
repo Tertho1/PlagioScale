@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { clearToken, getStoredEmail, setToken } from "../utils/auth";
+import { clearToken, getStoredEmail, getToken, setToken } from "../utils/auth";
 import "../styles/portal.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
@@ -13,6 +13,10 @@ export default function AuthPage() {
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (getToken()) navigate("/dashboard");
+  }, []);
 
   const title = useMemo(
     () => (mode === "login" ? "Sign in to your account" : "Create an account"),

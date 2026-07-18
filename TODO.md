@@ -100,6 +100,18 @@
 | R4.1 | Create full-stack E2E test (create assignment → upload → compute → matrix) | 🟢 LOW | `tests/e2e/test_pipeline.py` | ✅ 3 tests: health, full pipeline, anonymous flow. Marked `@pytest.mark.e2e` |
 | R4.2 | Update stress test with scaled worker verification | 🟢 LOW | `scripts/stress_test.py` | ✅ Added `--scale N` flag for pre-scaling workers |
 
+### Round 5 — Compute & UI Polish ✅
+
+| # | Task | Priority | Files | Status |
+|---|---|---|---|---|
+| R5.1 | `init_db()` returns `False` on migration failure → worker never queries DB | 🔴 HIGH | `shared/database.py` | ✅ Separate table creation from migration — `init_db()` returns `True` even if migration fails |
+| R5.2 | `process_batch_compute` silently returns empty list when <2 docs extracted | 🟠 MEDIUM | `shared/plagiarism_detector.py` | ✅ Properly fails with error listing which files failed text extraction |
+| R5.3 | Add `PYTHONUNBUFFERED=1` to worker environment | 🟢 LOW | `docker-compose.yml` | ✅ Ensures real-time container logs |
+| R5.4 | Update status endpoint to include error field | 🟢 LOW | `api-service/main.py` | ✅ Error field propagated in batch status response |
+| R5.5 | Frontend nav not auth-aware — shows Login when already logged in | 🟢 LOW | `frontend/src/App.jsx`, `frontend/src/components/RootNav.jsx` | ✅ Login/Sign up hidden when authenticated, nav shows email, AuthPage redirects if logged in |
+| R5.6 | Home page hero not auth-aware | 🟢 LOW | `frontend/src/pages/Home.jsx` | ✅ Shows different content based on auth state |
+| R5.7 | Update worker tests for new batch compute error flow | 🟢 LOW | `worker-service/tests/test_worker.py` | ✅ Tests verify proper error handling |
+
 ---
 
 See `docs/project_plan.md` for full roadmap.

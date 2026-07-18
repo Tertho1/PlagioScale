@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from typing import Optional as _Optional
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 
 from shared.database import (
     create_assignment as db_create_assignment,
@@ -163,7 +163,6 @@ class TokenResponse(BaseModel):
 
 
 # Auth helpers (module-level)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
@@ -175,7 +174,7 @@ if _ENV == "production" and JWT_SECRET == "please-change-this-secret":
 
 def hash_password(password: str) -> str:
     try:
-        return pwd_context.hash(password)
+        return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
     except Exception as e:
         logging.error(f"Password hashing failed: {e}")
         raise HTTPException(status_code=500, detail="Internal error")
@@ -183,7 +182,7 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return pwd_context.verify(plain, hashed)
+        return _bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
 
@@ -298,6 +297,7 @@ async def get_status(job_id: str):
             return {
                 "job_id": db_record["job_id"],
                 "status": db_record["status"],
+                "error": db_record.get("error"),
             }
 
     status = await queue_client.get_job_status(job_id)
@@ -305,7 +305,7 @@ async def get_status(job_id: str):
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return {"job_id": job_id, "status": status}
+    return {"job_id": job_id, "status": status, "error": None}
 
 
 @app.get("/queue/stats")

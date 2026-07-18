@@ -91,6 +91,7 @@ services:
       - DB_NAME=plagioscale
       - DB_USER=plagio
       - DB_PASSWORD=plagio_pass
+      - PYTHONUNBUFFERED=1
     depends_on:
       redis:
         condition: service_healthy

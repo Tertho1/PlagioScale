@@ -72,9 +72,10 @@ def test_process_job_short_text(mock_qc_init, mock_init_db):
     {"submission_id": "sub-2", "file_path": "/tmp/fake2.pdf"},
 ])
 @patch("worker.TextVectorizer")
+@patch("worker.Worker._extract_text", return_value="This is a test document with sufficient text for similarity computation.")
 @patch("worker.requests.post")
 @patch("worker.store_similarity_results")
-def test_process_batch_compute(mock_store_sim, mock_req_post, mock_vec, mock_subs, mock_qc_init, mock_init_db):
+def test_process_batch_compute(mock_store_sim, mock_req_post, mock_extract, mock_vec, mock_subs, mock_qc_init, mock_init_db):
     import json
     import worker
 
@@ -83,6 +84,12 @@ def test_process_batch_compute(mock_store_sim, mock_req_post, mock_vec, mock_sub
     mock_qc.get_similarity_matrix.return_value = None
 
     mock_vec_instance = mock_vec.return_value
+    mock_vec_instance.add_document.side_effect = lambda doc_id, text: (
+        mock_vec_instance.doc_texts.__setitem__(doc_id, text) or
+        mock_vec_instance.doc_ids.append(doc_id) or True
+    )
+    mock_vec_instance.doc_ids = []
+    mock_vec_instance.doc_texts = {}
     mock_vec_instance.compute_similarity_matrix.return_value = {"matrix": [[0.0, 0.5], [0.5, 0.0]]}
 
     w = worker.Worker()
@@ -124,3 +131,34 @@ def test_process_cancelled_job(mock_getrecord, mock_qc_init, mock_init_db):
     job = Job(job_id="test-job-005", text="This job was cancelled.")
     result = w.process_job(job)
     assert result is True
+
+
+@pytest.mark.integration
+@patch("worker.init_db", return_value=True)
+@patch("worker.QueueClient")
+@patch("worker.get_submissions_by_batch", return_value=[
+    {"submission_id": "sub-1", "file_path": "/tmp/nonexistent1.pdf"},
+    {"submission_id": "sub-2", "file_path": "/tmp/nonexistent2.pdf"},
+])
+@patch("worker.TextVectorizer")
+@patch("worker.requests.post")
+@patch("worker.store_similarity_results")
+def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_req_post, mock_vec, mock_subs, mock_qc_init, mock_init_db):
+    """Batch compute should FAIL when all documents fail text extraction."""
+    import json
+    import worker
+
+    mock_qc = mock_qc_init.return_value
+    mock_qc.get_job_status.return_value = "PENDING"
+
+    mock_vec_instance = mock_vec.return_value
+    mock_vec_instance.doc_ids = []
+
+    w = worker.Worker()
+    batch_id = "batch-001"
+    payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
+    job = Job(job_id="test-batch-fail-001", text=payload)
+    result = w.process_job(job)
+    assert result is False
+    mock_qc.update_job_status.assert_any_call("test-batch-fail-001", worker.JobStatus.FAILED)
+    mock_store_sim.assert_not_called()

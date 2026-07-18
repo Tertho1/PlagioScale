@@ -73,7 +73,7 @@ Submit text/file → API validates → enqueue job in Redis
 | **Async Redis in API** | `AsyncQueueClient` in `shared/queue_client.py` — non-blocking Redis for the FastAPI event loop |
 | **Sync Redis in Worker** | `QueueClient` — synchronous Redis for the blocking worker process |
 | **Text extraction** | `shared/text_extraction.py` — lazy imports for PDF/DOCX/txt to avoid runtime deps in the API |
-| **Autoscaler** | Two variants: in-container (Docker SDK, preferred) + host subprocess (fallback in `scripts/host_autoscaler.py`) |
+| **Autoscaler** | In-container (Docker SDK) — host variant removed |
 | **JWT auth** | localStorage-based (XSS-vulnerable, acceptable for local demo). Auto-refresh with 5-min expiry margin |
 | **Rate limiting** | slowapi: `/submit` 30/min, `/auth/signup` 10/min, `/auth/login` 20/min, `/portal/submit` 60/min |
 | **File uploads** | Sanitised filenames, extension whitelist + magic-byte check, 10 MB limit |
@@ -206,6 +206,7 @@ See `TODO.md` for per-task tracking and `AGENTS.md` for agent context.
 Key recent additions:
 - **Phase 4** — Collusion graph, blind review mode, CSV enhanced columns
 - **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 10 frontend tests, seed data script, stress test with autoscaling verification
+- **Round 5** — Database init resilience (worker no longer stuck if migration fails), batch compute failure propagation (clear error messages for failed extractions), auth-aware frontend navigation (Login/Sign up hidden when logged in, nav shows email, auth page redirects)
 - JWT refresh mechanism, rate limiting, file upload validation
 - Matched similarity matrix with row/column order for collusion graph
 - `hash_password()` error handling for passlib/bcrypt compatibility

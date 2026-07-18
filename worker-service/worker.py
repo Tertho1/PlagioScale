@@ -162,6 +162,7 @@ class Worker:
             notify_url = f'http://{api_host}:{api_port}/portal/notify'
             processed = 0
             total = len(submissions)
+            failed_files = []
             for sub in submissions:
                 try:
                     text = self._extract_text(sub['file_path'])
@@ -169,6 +170,7 @@ class Worker:
                         print(f"[{WORKER_ID}] Warning: extracted text too short for {sub.get('file_path')}")
                 except Exception as e:
                     print(f"[{WORKER_ID}] Warning: failed reading {sub.get('file_path')}: {e}")
+                    failed_files.append(sub.get('file_path', 'unknown'))
                 processed += 1
                 # notify API of progress (best-effort)
                 try:
@@ -176,13 +178,20 @@ class Worker:
                 except Exception:
                     pass
 
+            if len(vec.doc_ids) < 2:
+                error_msg = f"Need at least 2 valid documents for similarity matrix (got {len(vec.doc_ids)})"
+                if failed_files:
+                    error_msg += f"; failed to read: {failed_files}"
+                raise RuntimeError(error_msg)
+
             matrix = vec.compute_similarity_matrix()
-            if matrix:
-                store_similarity_results(batch_id, matrix)
+            store_similarity_results(batch_id, matrix)
 
             result = {
                 'batch_id': batch_id,
                 'num_submissions': len(submissions),
+                'documents_processed': len(vec.doc_ids),
+                'failed_files': failed_files,
                 'algorithm': 'TF-IDF cosine (with file text extraction)',
             }
             # store job result

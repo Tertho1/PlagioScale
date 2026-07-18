@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Dropzone from '../components/Dropzone'
+import { getToken } from '../utils/auth'
 import '../styles/portal.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
@@ -52,6 +53,8 @@ export default function StudentSubmit(){
     }
   }
 
+  const token = getToken()
+
   return (
     <div className="page-shell">
       <div className="top-nav">
@@ -64,8 +67,11 @@ export default function StudentSubmit(){
         </Link>
         <div className="nav-links">
           <Link to="/" className="nav-link">Home</Link>
-          <Link to="/auth" className="nav-link">Login / Sign up</Link>
-          <Link to="/dashboard" className="nav-link">Dashboard</Link>
+          {token ? (
+            <Link to="/dashboard" className="nav-link">Dashboard</Link>
+          ) : (
+            <Link to="/auth" className="nav-link">Login / Sign up</Link>
+          )}
         </div>
       </div>
 

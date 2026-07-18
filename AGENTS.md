@@ -18,7 +18,7 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | Decision | Choice |
 |---|---|
 | Async Redis in API | Implemented — `AsyncQueueClient` in `shared/queue_client.py` (Phase 2) |
-| Autoscaler | In-container (Docker SDK) — host variant (`infrastructure/`) pending deletion (Round 2) |
+| Autoscaler | In-container (Docker SDK) — host variant deleted (Round 2) |
 | JWT storage | localStorage (XSS-vulnerable — acceptable for local demo) |
 | WebSocket scaling | Single API instance only — no Redis Pub/Sub for multi-replica yet |
 | Resource limits | Set on all services in docker-compose.yml (Phase 0) |
@@ -30,8 +30,11 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | A | `get_user_by_email` missing `password_hash` — login broken for all users | 🔴 HIGH | Round 1 |
 | B | `create_assignment` returns success on silent DB write failure | 🟠 MEDIUM | Round 1 |
 | C | `StudentDashboard.jsx` upload missing required `roll` field → 422 | 🟠 MEDIUM | Round 1 |
+| D | `init_db()` returns `False` on migration failure → worker never queries DB | 🔴 HIGH | Round 5 |
+| E | `process_batch_compute` silently returns empty list on <2 docs extracted | 🟠 MEDIUM | Round 5 |
+| F | Frontend nav not auth-aware (shows Login when logged in, lacks user context) | 🟢 LOW | Round 5 |
 
-See `TODO.md` for full 4-round fix plan.
+See `TODO.md` for full round-by-round fix plan.
 
 ## Folder Structure
 
