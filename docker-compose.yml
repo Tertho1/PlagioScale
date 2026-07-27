@@ -111,6 +111,11 @@ services:
       context: .
       dockerfile: worker-service/Dockerfile
     user: "65532:65532"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -123,14 +128,11 @@ services:
       - DB_PASSWORD=plagio_pass
       - PYTHONUNBUFFERED=1
       - USE_MTLS=${USE_MTLS:-false}
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
+      - HF_HOME=/app/hf_cache
     volumes:
       - uploads_data:/app/uploads
       - worker_storage:/app/storage
+      - hf_cache:/app/hf_cache
       - ./certs:/app/certs:ro
     networks:
       - plagioscale-network
@@ -298,5 +300,6 @@ volumes:
   redis_data:
   uploads_data:
   worker_storage:
+  hf_cache:
   prometheus_data:
   grafana_data:

@@ -102,14 +102,30 @@ class AIContentDetector:
         if self._gpt2_model is not None:
             return
         try:
+            import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            self._gpt2_tokenizer = AutoTokenizer.from_pretrained(_GPT2_MODEL)
-            self._gpt2_model = AutoModelForCausalLM.from_pretrained(_GPT2_MODEL)
-            self._gpt2_model.eval()
+            # Try loading from cache first (local_files_only) to avoid HF timeouts
+            try:
+                self._gpt2_tokenizer = AutoTokenizer.from_pretrained(
+                    _GPT2_MODEL, local_files_only=True
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    _GPT2_MODEL, local_files_only=True
+                )
+            except Exception:
+                # Fall back to online (will download if not cached)
+                self._gpt2_tokenizer = AutoTokenizer.from_pretrained(_GPT2_MODEL)
+                model = AutoModelForCausalLM.from_pretrained(_GPT2_MODEL)
+
+            model = model.to("cpu")
+            model.eval()
+            self._gpt2_model = model
             logger.info("DistilGPT2 loaded for perplexity scoring")
         except Exception as exc:
             logger.warning("DistilGPT2 failed to load: %s", exc)
+            self._gpt2_model = None
+            self._gpt2_tokenizer = None
 
     # ---- Public API ----
 
@@ -198,12 +214,22 @@ class AIContentDetector:
     def _perplexity_of(self, text: str) -> float:
         import torch
 
-        inputs = self._gpt2_tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=512
-        )
-        with torch.no_grad():
-            outputs = self._gpt2_model(**inputs, labels=inputs["input_ids"])
-        return float(torch.exp(outputs.loss).item())
+        try:
+            inputs = self._gpt2_tokenizer(
+                text, return_tensors="pt", truncation=True, max_length=512
+            )
+            with torch.no_grad():
+                outputs = self._gpt2_model(**inputs, labels=inputs["input_ids"])
+            loss = outputs.loss
+            if loss is None:
+                return 30.0
+            if hasattr(loss, 'device') and 'meta' in str(loss.device):
+                logger.warning("Meta tensor detected in perplexity — returning neutral value")
+                return 30.0
+            return float(torch.exp(loss).item())
+        except Exception as exc:
+            logger.warning("Perplexity computation failed: %s", exc)
+            return 30.0
 
     @staticmethod
     def _split_sentences(text: str) -> list[str]:
