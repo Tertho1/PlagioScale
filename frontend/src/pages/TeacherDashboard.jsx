@@ -28,6 +28,7 @@ export default function TeacherDashboard() {
   const [progress, setProgress] = useState({ processed: 0, total: 0 });
   const [matrix, setMatrix] = useState(null);
   const [labels, setLabels] = useState([]);
+  const [error, setError] = useState("");
   const [computing, setComputing] = useState(false);
   const [viewer, setViewer] = useState({
     open: false,
@@ -52,11 +53,12 @@ export default function TeacherDashboard() {
     const res = await fetch(`${API_BASE}/portal/assignments`, {
       method: "POST",
       headers,
+      credentials: "include",
       body: JSON.stringify({ name: assignName, expected_count: 50 }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.detail || "Failed to create assignment");
+      setError(err.detail || "Failed to create assignment");
       return;
     }
     const data = await res.json();
@@ -70,9 +72,9 @@ export default function TeacherDashboard() {
   useEffect(() => {
     if (!batchId) return;
     try {
-      const ws = new WebSocket(
-        API_BASE.replace("http", "ws") + `/portal/ws/${batchId}`,
-      );
+      const token = getToken();
+      const wsUrl = API_BASE.replace("http", "ws") + `/portal/ws/${batchId}`;
+      const ws = new WebSocket(token ? `${wsUrl}?token=${token}` : wsUrl);
       ws.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
@@ -91,18 +93,19 @@ export default function TeacherDashboard() {
   }
 
   async function computeAndFetch() {
-    if (!batchId) return alert("Create or enter a batch id first");
+    if (!batchId) { setError("Create or enter a batch id first"); return; }
     try {
       setComputing(true);
       // enqueue batch compute job
       const post = await fetch(
         `${API_BASE}/portal/compute-similarity/${batchId}`,
-        { method: "POST" },
+        { method: "POST", credentials: "include" },
       );
       const pdata = await post.json().catch(() => ({}));
       if (!post.ok) {
         setComputing(false);
-        return alert(pdata.detail || "Compute enqueue failed");
+        setError(pdata.detail || "Compute enqueue failed");
+        return;
       }
       const jobId = pdata.job_id;
 
@@ -111,7 +114,7 @@ export default function TeacherDashboard() {
       for (let i = 0; i < 300; i++) {
         // max ~10 minutes with 2s interval
         try {
-          const sres = await fetch(`${API_BASE}/status/${jobId}`);
+          const sres = await fetch(`${API_BASE}/status/${jobId}`, { credentials: "include" });
           if (sres.ok) {
             const sjson = await sres.json();
             status = sjson.status;
@@ -124,20 +127,21 @@ export default function TeacherDashboard() {
         await new Promise((r) => setTimeout(r, 2000));
       }
       setComputing(false);
-      if (status !== "COMPLETED") return alert("Compute failed or timed out");
+      if (status !== "COMPLETED") { setError("Compute failed or timed out"); return; }
 
       // fetch similarity matrix after completion
       const mres = await fetch(
         `${API_BASE}/portal/similarity-matrix/${batchId}`,
+        { credentials: "include" },
       );
-      if (!mres.ok) return alert("Failed fetching matrix");
+      if (!mres.ok) { setError("Failed fetching matrix"); return; }
       const mjson = await mres.json();
       const matrixObj = mjson.matrix;
       const ids = Object.keys(matrixObj);
       const mat = ids.map((i) => ids.map((j) => matrixObj[i][j] || 0));
 
       // fetch submissions to get friendly labels (roll/name)
-      const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}`);
+      const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}`, { credentials: "include" });
       let labelsMap = {};
       if (sfetch.ok) {
         const sjson = await sfetch.json();
@@ -154,7 +158,7 @@ export default function TeacherDashboard() {
     } catch (e) {
       console.error(e);
       setComputing(false);
-      alert(e?.message || "Compute failed");
+      setError(e?.message || "Compute failed");
     }
   }
 
@@ -168,44 +172,13 @@ export default function TeacherDashboard() {
   }
 
   async function handleExportCSV() {
-    if (!batchId) return alert("Create or enter a batch id first");
+    if (!batchId) { setError("Create or enter a batch id first"); return; }
     const url = `${API_BASE}/portal/export/${batchId}`;
     window.open(url, "_blank");
   }
 
   return (
     <div className="page-shell">
-      <div className="top-nav">
-        <Link to="/" className="brand-mark">
-          <span className="brand-badge">P</span>
-          <span className="brand-copy">
-            <strong>PlagioScale</strong>
-            <span>Review dashboard</span>
-          </span>
-        </Link>
-        <div className="nav-links">
-          <Link to="/" className="nav-link">
-            Home
-          </Link>
-          <Link to="/student" className="nav-link">
-            Student Upload
-          </Link>
-          <Link to="/auth" className="nav-link">Login / Sign up</Link>
-          {authToken && (
-            <button
-              type="button"
-              className="nav-link"
-              style={{ background: "none", border: "none", cursor: "pointer" }}
-              onClick={() => {
-                clearToken();
-                navigate("/auth");
-              }}
-            >
-              Logout
-            </button>
-          )}
-        </div>
-      </div>
 
       {!authToken ? (
         <section className="hero-card" style={{ marginBottom: 20 }}>
@@ -230,6 +203,12 @@ export default function TeacherDashboard() {
             Signed in as <span className="mono">{authEmail || "user"}</span>. Set up an assignment batch, share the access code with students, and use the matrix to spot possible overlap.
           </p>
         </section>
+      )}
+
+      {error && (
+        <div className="status-box error" style={{ marginBottom: 16 }}>
+          {error}
+        </div>
       )}
 
       <div className="metric-row" style={{ marginBottom: 20 }}>

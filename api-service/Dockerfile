@@ -1,19 +1,29 @@
-FROM python:3.11-slim
+FROM dhi.io/python:3.11-alpine-dev AS builder
+
+WORKDIR /build
+
+RUN apk add --no-cache file-dev gcc g++ musl-dev linux-headers make python3-dev
+
+COPY api-service/requirements.txt .
+
+RUN python -m venv /build/venv && \
+    /build/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+RUN mkdir -p /app/uploads /app/logs
+
+FROM dhi.io/python:3.11-alpine
 
 WORKDIR /app
 
-# Install system dependencies (libmagic for python-magic)
-RUN apt-get update && apt-get install -y --no-install-recommends libmagic1 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/lib/libmagic.so* /usr/lib/
 
-# Install dependencies first
-COPY api-service/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder --chown=65532:65532 /app/uploads /app/uploads
+COPY --from=builder --chown=65532:65532 /app/logs /app/logs
 
-# Copy shared utilities
-COPY shared /app/shared
+COPY --from=builder --chown=65532:65532 /build/venv/lib/python3.11/site-packages /usr/lib/python3.11/site-packages
 
-# Copy API service
-COPY api-service /app
+COPY --chown=65532:65532 shared /app/shared
+COPY --chown=65532:65532 api-service /app
 
 EXPOSE 8000
 

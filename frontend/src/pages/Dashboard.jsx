@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { clearToken, getAuthHeaders, getStoredEmail, getToken } from "../utils/auth";
 import { useBatchProgress } from "../utils/websocket";
 import BlindReviewToggle from "../components/BlindReviewToggle";
@@ -47,6 +47,7 @@ function AssignmentCard({ item, active, onClick }) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const token = getToken();
   const email = getStoredEmail();
 
@@ -56,7 +57,7 @@ export default function Dashboard() {
   const [expectedCount, setExpectedCount] = useState(30);
   const [ownedAssignments, setOwnedAssignments] = useState([]);
   const [sharedAssignments, setSharedAssignments] = useState([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(searchParams.get("batch") || "");
   const [selected, setSelected] = useState(null);
   const [matrix, setMatrix] = useState(null);
   const [labels, setLabels] = useState([]);
@@ -98,13 +99,15 @@ export default function Dashboard() {
     try {
       const response = await fetch(`${API_BASE}/portal/assignments`, {
         headers: await getAuthHeaders(),
+        credentials: "include",
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to load assignments");
-      setOwnedAssignments(data.owned || []);
-      setSharedAssignments(data.shared || []);
-      const nextSelected = selectedId || (data.owned?.[0]?.batch_id || data.shared?.[0]?.batch_id || "");
-      setSelectedId(nextSelected);
+      const owned = (data.owned || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      const shared = (data.shared || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      setOwnedAssignments(owned);
+      setSharedAssignments(shared);
+      setSelectedId((id) => id || (owned[0]?.batch_id || shared[0]?.batch_id || ""));
     } catch (error) {
       setError(error.message);
       if (error.message?.includes("authorization") || error.message?.includes("token")) {
@@ -123,6 +126,7 @@ export default function Dashboard() {
     try {
       const response = await fetch(`${API_BASE}/portal/assignments/${batchId}`, {
         headers: await getAuthHeaders(),
+        credentials: "include",
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to load assignment");
@@ -130,14 +134,14 @@ export default function Dashboard() {
       setSelected(data.assignment);
       setSubmissions(data.submissions || []);
 
-      const mres = await fetch(`${API_BASE}/portal/similarity-matrix/${batchId}`);
+      const mres = await fetch(`${API_BASE}/portal/similarity-matrix/${batchId}`, { headers: await getAuthHeaders(), credentials: "include" });
       if (mres.ok) {
         const mjson = await mres.json();
         const matrixObj = mjson.matrix || {};
         const ids = Object.keys(matrixObj);
         setMatrix(ids.length ? ids.map((i) => ids.map((j) => matrixObj[i][j] || 0)) : null);
 
-        const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}?limit=500&offset=0`);
+        const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}?limit=500&offset=0`, { headers: await getAuthHeaders(), credentials: "include" });
         let labelsMap = {};
         if (sfetch.ok) {
           const sjson = await sfetch.json();
@@ -174,6 +178,7 @@ export default function Dashboard() {
       const response = await fetch(`${API_BASE}/portal/assignments`, {
         method: "POST",
         headers,
+        credentials: "include",
         body: JSON.stringify({ name: assignmentName, expected_count: Number(expectedCount) || 0 }),
       });
       const data = await response.json();
@@ -194,7 +199,7 @@ export default function Dashboard() {
     setError("");
     setComputing(true);
     try {
-      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST" });
+      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST", credentials: "include" });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(data.detail || "Failed to queue compute");
@@ -206,7 +211,7 @@ export default function Dashboard() {
       let jobError = null;
       for (let i = 0; i < 300; i++) {
         try {
-          const sres = await fetch(`${API_BASE}/status/${jobId}`);
+          const sres = await fetch(`${API_BASE}/status/${jobId}`, { credentials: "include" });
           if (sres.ok) {
             const sjson = await sres.json();
             status = sjson.status;
@@ -242,7 +247,8 @@ export default function Dashboard() {
     async function fetchText(subId) {
       try {
         const res = await fetch(
-          `${API_BASE}/portal/submissions/${selectedId}/${subId}/text`
+          `${API_BASE}/portal/submissions/${selectedId}/${subId}/text`,
+          { credentials: "include" }
         );
         if (res.ok) {
           const data = await res.json();
@@ -276,6 +282,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!selectedId) return;
+    setSearchParams(selectedId ? { batch: selectedId } : {}, { replace: true });
     loadAssignmentDetails(selectedId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -284,30 +291,6 @@ export default function Dashboard() {
 
   return (
     <div className="page-shell dashboard-shell">
-      <header className="top-nav top-nav-hero">
-        <Link to="/" className="brand-mark">
-          <span className="brand-badge">P</span>
-          <span className="brand-copy">
-            <strong>PlagioScale</strong>
-            <span>Assignments and review</span>
-          </span>
-        </Link>
-        <div className="nav-links nav-links-modern">
-          <Link to="/" className="nav-link nav-link-modern">Home</Link>
-          <Link to="/student" className="nav-link nav-link-modern">Submit</Link>
-          <span className="nav-link nav-link-modern nav-email">{email}</span>
-          <button
-            type="button"
-            className="nav-link nav-link-modern"
-            onClick={() => {
-              clearToken();
-              navigate("/auth");
-            }}
-          >
-            Logout
-          </button>
-        </div>
-      </header>
 
       <section className="dashboard-hero">
         <div className="dashboard-hero-copy">
@@ -316,6 +299,30 @@ export default function Dashboard() {
           <p>
             Signed in as <span className="mono">{email || "user"}</span>.
           </p>
+          <div className="dashboard-select-bar">
+            <select
+              value={selectedId || ""}
+              onChange={(e) => setSelectedId(e.target.value)}
+              className="assignment-select"
+            >
+              {!selectedId && <option value="">Select an assignment...</option>}
+              {ownedAssignments.map((a) => (
+                <option key={a.batch_id} value={a.batch_id}>{a.name} (owned)</option>
+              ))}
+              {sharedAssignments.map((a) => (
+                <option key={a.batch_id} value={a.batch_id}>{a.name} (shared)</option>
+              ))}
+            </select>
+            <div className="toolbar-actions">
+              <BlindReviewToggle enabled={blindReview} onToggle={() => setBlindReview((v) => !v)} />
+              <button className="button-secondary button-sm" type="button" onClick={() => selectedId && loadAssignmentDetails(selectedId)} disabled={refreshing}>
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </button>
+              <button className="button button-sm" type="button" onClick={computeSimilarity} disabled={!selectedId || computing}>
+                {computing ? "Computing..." : "Compute similarity"}
+              </button>
+            </div>
+          </div>
         </div>
         <div className="dashboard-hero-stats">
           <div className="dashboard-stat">
@@ -372,7 +379,9 @@ export default function Dashboard() {
           <div className="assignment-list-block">
             <div className="list-heading">Owned</div>
             <div className="assignment-list">
-              {(loading ? [] : ownedAssignments).map((item) => (
+              {loading
+                ? Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)
+                : ownedAssignments.map((item) => (
                 <AssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
               ))}
               {!loading && ownedAssignments.length === 0 && <div className="empty-state">No owned assignments yet.</div>}
@@ -382,7 +391,9 @@ export default function Dashboard() {
           <div className="assignment-list-block">
             <div className="list-heading">Shared</div>
             <div className="assignment-list">
-              {(loading ? [] : sharedAssignments).map((item) => (
+              {loading
+                ? Array.from({ length: 2 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)
+                : sharedAssignments.map((item) => (
                 <AssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
               ))}
               {!loading && sharedAssignments.length === 0 && <div className="empty-state">No shared assignments.</div>}
@@ -428,19 +439,29 @@ export default function Dashboard() {
               </div>
 
               <div className="submissions-table">
-                {submissions.length > 0 ? submissions.map((submission, idx) => (
-                  <div key={submission.submission_id} className="submission-row">
-                    <div>
-                      <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
-                      <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
-                      <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
+                {submissions.length > 0 ? submissions.map((submission, idx) => {
+                  const aiScore = submission.ai_score != null ? submission.ai_score : null;
+                  let aiBadge = null;
+                  if (aiScore != null && aiScore >= 0) {
+                    const pct = (aiScore * 100).toFixed(0);
+                    const cls = aiScore > 0.7 ? 'ai-badge-red' : aiScore > 0.3 ? 'ai-badge-yellow' : 'ai-badge-green';
+                    aiBadge = <span className={`ai-badge ${cls}`} title={`AI detection confidence: ${pct}%`}>AI {pct}%</span>;
+                  }
+                  return (
+                    <div key={submission.submission_id} className="submission-row">
+                      <div>
+                        <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
+                        <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
+                        <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
+                      </div>
+                      <div className="row-meta">
+                        {aiBadge}
+                        <span>{submission.status || "ACTIVE"}</span>
+                        <span className="mono">{submission.submission_id.slice(0, 8)}</span>
+                      </div>
                     </div>
-                    <div className="row-meta">
-                      <span>{submission.status || "ACTIVE"}</span>
-                      <span className="mono">{submission.submission_id.slice(0, 8)}</span>
-                    </div>
-                  </div>
-                )) : <div className="empty-state">No submissions for this assignment yet.</div>}
+                  );
+                }) : <div className="empty-state">No submissions for this assignment yet.</div>}
               </div>
 
               <div className="matrix-card matrix-card-compact">
@@ -463,6 +484,7 @@ export default function Dashboard() {
         leftSubmission={viewer.left}
         rightSubmission={viewer.right}
         similarity={viewer.similarity}
+        batchId={selectedId}
         onClose={() => setViewer({ ...viewer, open: false })}
       />
     </div>

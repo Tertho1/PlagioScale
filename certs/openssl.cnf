@@ -1,0 +1,27 @@
+
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+CN = PlagioScale Dev CA
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+
+[server_cert]
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = @san
+
+[san]
+DNS.1 = localhost
+DNS.2 = api-service
+DNS.3 = worker
+DNS.4 = autoscaler
+DNS.5 = monitoring-service

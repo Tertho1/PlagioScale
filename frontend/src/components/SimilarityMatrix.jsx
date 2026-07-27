@@ -1,8 +1,7 @@
-import React from 'react'
+import React, { useCallback } from 'react'
 import './SimilarityMatrix.css'
 
 function scoreToColor(v){
-  // v expected in [0,1]
   const r = Math.round(255 * v)
   const g = Math.round(200 * (1 - v))
   const b = Math.round(100 * (1 - v))
@@ -22,17 +21,34 @@ export default function SimilarityMatrix({matrix, labels, onCellClick, maxDispla
     )
   }
 
+  const handleCellKey = useCallback((e, i, j, cell) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onCellClick && onCellClick(i, j, cell);
+    }
+  }, [onCellClick]);
+
   return (
-    <div className="smatrix-root">
+    <div className="smatrix-root" role="grid" aria-label="Similarity matrix">
       <div className="smatrix-grid" style={{gridTemplateColumns: `60px repeat(${n}, 1fr)`}}>
-        <div className="smatrix-corner" />
-        {labels.map((l, i)=> <div key={'h'+i} className="smatrix-header">{l}</div>)}
+        <div className="smatrix-corner" role="columnheader" />
+        {labels.map((l, i)=> <div key={'h'+i} className="smatrix-header" role="columnheader" aria-label={l}>{l}</div>)}
 
         {matrix.map((row, i) => (
           <React.Fragment key={'r'+i}>
-            <div className="smatrix-rowheader">{labels[i]}</div>
+            <div className="smatrix-rowheader" role="rowheader" aria-label={labels[i]}>{labels[i]}</div>
             {row.map((cell, j)=> (
-              <div key={`c-${i}-${j}`} className="smatrix-cell" title={`${labels[i]} ↔ ${labels[j]}: ${cell.toFixed(3)}`} onClick={()=>onCellClick && onCellClick(i,j,cell)} style={{background: scoreToColor(cell)}}>
+              <div
+                key={`c-${i}-${j}`}
+                className="smatrix-cell"
+                role="gridcell"
+                tabIndex={i === j ? -1 : 0}
+                title={`${labels[i]} ↔ ${labels[j]}: ${cell.toFixed(3)}`}
+                aria-label={`Similarity ${labels[i]} to ${labels[j]}: ${cell.toFixed(3)}`}
+                onClick={() => onCellClick && onCellClick(i, j, cell)}
+                onKeyDown={(e) => handleCellKey(e, i, j, cell)}
+                style={{background: scoreToColor(cell)}}
+              >
                   {i===j ? '—' : cell.toFixed(2)}
               </div>
             ))}

@@ -1,64 +1,74 @@
-const TOKEN_KEY = "plagioscale_access_token";
-const USER_KEY = "plagioscale_user_email";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const USER_KEY = "plagioscale_user_email";
+const TOKEN_KEY = "plagioscale_access_token";
 let refreshPromise = null;
+let cachedMe = null;
 
-function decodePayload(token) {
-  try {
-    const payload = token.split(".")[1];
-    return JSON.parse(atob(payload));
-  } catch {
-    return null;
-  }
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
-function isTokenExpiringSoon(token, marginSec = 300) {
-  const payload = decodePayload(token);
-  if (!payload || !payload.exp) return true;
-  return Date.now() / 1000 > payload.exp - marginSec;
+function deleteCookie(name) {
+  document.cookie = `${name}=; max-age=0; path=/`;
 }
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY) || "";
-}
-
-export function setToken(token, email = "") {
-  localStorage.setItem(TOKEN_KEY, token);
-  if (email) {
-    localStorage.setItem(USER_KEY, email);
-  }
-  refreshPromise = null;
-}
-
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-  refreshPromise = null;
+  return localStorage.getItem(TOKEN_KEY) || getCookie("access_token") || "";
 }
 
 export function getStoredEmail() {
   return localStorage.getItem(USER_KEY) || "";
 }
 
+export function setToken(token, email = "") {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+  }
+  if (email) {
+    localStorage.setItem(USER_KEY, email);
+  }
+  refreshPromise = null;
+  cachedMe = null;
+}
+
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  deleteCookie("access_token");
+  deleteCookie("csrf_token");
+  refreshPromise = null;
+  cachedMe = null;
+  fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
+}
+
+export async function fetchMe() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    cachedMe = data;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 export async function refreshToken() {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    const token = getToken();
-    if (!token) return null;
-
     try {
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
       });
       if (!res.ok) {
         clearToken();
         return null;
       }
-      const data = await res.json();
-      setToken(data.access_token);
-      return data.access_token;
+      return true;
     } catch {
       return null;
     }
@@ -73,15 +83,27 @@ export async function refreshToken() {
 
 export async function getAuthHeaders() {
   const token = getToken();
-  if (!token) return {};
-
-  if (isTokenExpiringSoon(token, 300)) {
-    const fresh = await refreshToken();
-    if (fresh) {
-      return { Authorization: `Bearer ${fresh}` };
-    }
-    return {};
+  const csrf = getCookie("csrf_token");
+  const headers = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
+  if (csrf) {
+    headers["X-CSRF-Token"] = csrf;
+  }
+  return headers;
+}
 
-  return { Authorization: `Bearer ${token}` };
+export function fetchOpts(opts = {}) {
+  const token = getToken();
+  const csrf = getCookie("csrf_token");
+  return {
+    credentials: "include",
+    ...opts,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+      ...(opts.headers || {}),
+    },
+  };
 }

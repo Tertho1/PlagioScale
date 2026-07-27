@@ -1,20 +1,27 @@
-FROM python:3.11-slim
+FROM dhi.io/python:3.11-dev AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y gcc g++ make && rm -rf /var/lib/apt/lists/*
+
+COPY worker-service/requirements.txt .
+
+RUN python -m venv /build/venv && \
+    /build/venv/bin/pip install --no-cache-dir torch --no-deps --index-url https://download.pytorch.org/whl/cpu && \
+    /build/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+RUN mkdir -p /app/storage /app/logs
+
+FROM dhi.io/python:3.11
 
 WORKDIR /app
 
-# Install dependencies first
-COPY worker-service/requirements.txt .
-# Install CPU-only PyTorch without deps (deps come from PyPI below)
-RUN pip install --no-cache-dir torch --no-deps --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder --chown=65532:65532 /app/storage /app/storage
+COPY --from=builder --chown=65532:65532 /app/logs /app/logs
 
-# Pre-download SentenceTransformer model for faster startup
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L12-v2')"
+COPY --from=builder --chown=65532:65532 /build/venv/lib/python3.11/site-packages /usr/lib/python3.11/site-packages
 
-# Copy shared utilities
-COPY shared /app/shared
-
-# Copy worker service
-COPY worker-service /app
+COPY --chown=65532:65532 shared /app/shared
+COPY --chown=65532:65532 worker-service /app
 
 CMD ["python", "worker.py"]

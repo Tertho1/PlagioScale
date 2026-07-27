@@ -7,24 +7,29 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (
+    Cookie,
     Depends,
     FastAPI,
     File,
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
+    Response,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import Counter, Gauge, make_asgi_app
 from pydantic import BaseModel, EmailStr
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -32,7 +37,10 @@ from slowapi.util import get_remote_address
 
 # Add shared to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from functools import partial
 from typing import Optional as _Optional
+
+import redis.asyncio as aioredis
 
 from jose import JWTError, jwt
 import bcrypt as _bcrypt
@@ -42,32 +50,141 @@ from shared.database import (
 )
 from shared.database import (
     create_job_record,
+    create_notification,
     create_submission,
     create_user,
     get_active_submission_by_batch_and_roll,
+    get_admin_stats,
+    get_paginated_users,
     get_assignment,
     get_assignment_by_access_code,
+    get_cross_batch_comparisons,
     get_job_record,
+    get_pending_notifications,
     get_similarity_matrix,
+    get_student_comparison_details,
     get_submissions_by_batch,
+    get_submissions_count_by_batch,
+    get_submission_by_id,
     get_user_by_email,
     get_user_by_id,
     init_db,
     list_assignments,
+    mark_notification_sent,
     update_job_status,
     update_submission_status,
+    update_user_role,
 )
 from shared.models import Job, JobStatus
 from shared.queue_client import AsyncQueueClient
 from shared.text_extraction import extract_text
 from shared.vectorizer import TextVectorizer
+from shared.audit_log import audit
+from shared.email_notifier import send_email, notify_completion
+from shared.external_lookup import search_external_sources
+from shared.pdf_report import generate_similarity_report_pdf
 
 # Websocket connections per batch (kept in-memory for active sockets)
-ws_connections = {}
+ws_connections: dict[str, set[WebSocket]] = {}
+_ws_rate: dict[str, list[float]] = {}
+_WS_RATE_LIMIT = 10
+_WS_RATE_WINDOW = 60
+_WS_PUBSUB_CHANNEL = "ws:progress"
+_ws_redis: _Optional[aioredis.Redis] = None
+
+
+def _get_redis_config():
+    return {
+        "host": os.getenv("REDIS_HOST", "redis"),
+        "port": int(os.getenv("REDIS_PORT", 6379)),
+        "password": os.getenv("REDIS_PASSWORD", None) or None,
+    }
+
+
+async def _ws_pubsub_init():
+    global _ws_redis
+    cfg = _get_redis_config()
+    _ws_redis = aioredis.Redis(**cfg, decode_responses=True)
+
+
+async def _ws_pubsub_listener():
+    await asyncio.sleep(2)
+    if _ws_redis is None:
+        await _ws_pubsub_init()
+    pubsub = _ws_redis.pubsub()
+    await pubsub.subscribe(_WS_PUBSUB_CHANNEL)
+    async for message in pubsub.listen():
+        if message["type"] != "message":
+            continue
+        try:
+            data = json.loads(message["data"])
+            batch_id = data.get("batch_id")
+            payload = data.get("payload")
+            if batch_id in ws_connections and payload is not None:
+                dead = []
+                for ws in list(ws_connections[batch_id]):
+                    try:
+                        await ws.send_text(json.dumps(payload))
+                    except Exception:
+                        dead.append(ws)
+                for d in dead:
+                    ws_connections[batch_id].discard(d)
+        except Exception:
+            continue
+
+
+def _check_ws_rate(ip: str) -> bool:
+    now = time.time()
+    if ip not in _ws_rate:
+        _ws_rate[ip] = []
+    _ws_rate[ip] = [t for t in _ws_rate[ip] if now - t < _WS_RATE_WINDOW]
+    if len(_ws_rate[ip]) >= _WS_RATE_LIMIT:
+        return False
+    _ws_rate[ip].append(now)
+    return True
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 app = FastAPI(title="PlagioScale API", version="1.0.0")
+
+
+async def run_db(func, *args, **kwargs):
+    """Run a synchronous DB function in a thread pool to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(func, *args, **kwargs))
+
+
+async def _cleanup_old_data():
+    """Periodically clean up old CANCELLED submissions and their files."""
+    while True:
+        await asyncio.sleep(3600)
+        if not db_ready:
+            continue
+        try:
+            from shared.database import Submission, SessionLocal
+            from sqlalchemy import text
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            session = SessionLocal()
+            try:
+                old = session.query(Submission).filter(
+                    Submission.status == "CANCELLED",
+                    Submission.created_at < cutoff,
+                ).all()
+                for sub in old:
+                    fp = sub.file_path
+                    if fp and os.path.exists(fp):
+                        try:
+                            os.remove(fp)
+                        except Exception:
+                            pass
+                    session.delete(sub)
+                if old:
+                    session.commit()
+                    logging.info("Cleaned up %d old cancelled submissions", len(old))
+            finally:
+                session.close()
+        except Exception as exc:
+            logging.warning("Data cleanup failed: %s", exc)
 
 
 async def _cleanup_stale_ws():
@@ -91,9 +208,40 @@ async def _cleanup_stale_ws():
                 del ws_connections[batch_id]
 
 
+async def _monitor_db():
+    global db_ready
+    DB_READY_GAUGE.set(1 if db_ready else 0)
+    while True:
+        await asyncio.sleep(30)
+        loop = asyncio.get_event_loop()
+        try:
+            from sqlalchemy import text
+            from shared.database import SessionLocal
+            session = SessionLocal()
+            session.execute(text("SELECT 1"))
+            session.close()
+            if not db_ready:
+                ok = await loop.run_in_executor(None, init_db)
+                if ok:
+                    db_ready = True
+                    DB_READY_GAUGE.set(1)
+                    AUTO_RECOVERY_TOTAL.labels("db_reconnect").inc()
+                    logging.info("Database connection re-established")
+        except Exception:
+            if db_ready:
+                db_ready = False
+                DB_READY_GAUGE.set(0)
+                logging.warning("Database connection lost — will retry")
+
+
+
 @app.on_event("startup")
-async def _start_ws_cleanup():
+async def _start_background_tasks():
+    await _ws_pubsub_init()
+    asyncio.create_task(_ws_pubsub_listener())
     asyncio.create_task(_cleanup_stale_ws())
+    asyncio.create_task(_cleanup_old_data())
+    asyncio.create_task(_monitor_db())
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(429, _rate_limit_exceeded_handler)
@@ -119,6 +267,15 @@ REQUESTS_SUBMITTED = Counter(
     "plagioscale_requests_submitted_total", "Total submitted jobs"
 )
 QUEUE_LENGTH_GAUGE = Gauge("plagioscale_queue_length", "Current Redis queue length")
+AUDIT_EVENTS_TOTAL = Counter(
+    "plagioscale_audit_events_total", "Total audit events by action",
+    ["action"]
+)
+DB_READY_GAUGE = Gauge("plagioscale_db_ready", "Database connection status (1=ok, 0=fail)")
+AUTO_RECOVERY_TOTAL = Counter(
+    "plagioscale_auto_recovery_total", "Automated recovery actions by type",
+    ["type"]
+)
 
 # Mount Prometheus ASGI app at /metrics
 app.mount("/metrics", make_asgi_app())
@@ -163,13 +320,16 @@ class TokenResponse(BaseModel):
 
 
 # Auth helpers (module-level)
-JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable must be set")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+WORKER_SECRET = os.getenv("WORKER_SECRET", "")
+CSRF_SECRET = os.getenv("CSRF_SECRET", JWT_SECRET)
 
-_ENV = os.getenv("ENV", "development")
-if _ENV == "production" and JWT_SECRET == "please-change-this-secret":
-    raise RuntimeError("JWT_SECRET must be changed in production mode")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", None)
 
 
 def hash_password(password: str) -> str:
@@ -187,11 +347,54 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str, token_version: int = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
-    data = {"sub": subject, "exp": expire}
+    data = {"sub": subject, "exp": expire, "ver": token_version}
     token = jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
     return token
+
+
+def generate_csrf_token() -> str:
+    return str(uuid.uuid4())
+
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=JWT_EXPIRE_MINUTES * 60,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response) -> None:
+    response.set_cookie(
+        key="access_token",
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=0,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+
+
+def set_csrf_cookie(response: Response, csrf: str) -> None:
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf,
+        httponly=False,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=JWT_EXPIRE_MINUTES * 60,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
 
 
 def decode_access_token(token: str) -> _Optional[str]:
@@ -202,16 +405,24 @@ def decode_access_token(token: str) -> _Optional[str]:
         return None
 
 
-def get_current_user(authorization: str | None = Header(default=None)) -> dict:
-    """Resolve the current user from a Bearer JWT."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
+def get_current_user(
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Cookie(default=None),
+    token_param: str | None = Query(default=None, alias="token"),
+) -> dict:
+    """Resolve the current user from a Bearer JWT or httpOnly cookie."""
+    token = None
+    if authorization:
+        prefix = "Bearer "
+        if authorization.startswith(prefix):
+            token = authorization[len(prefix):].strip()
+    if not token:
+        token = access_token
+    if not token:
+        token = token_param
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing authorization")
 
-    prefix = "Bearer "
-    if not authorization.startswith(prefix):
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-
-    token = authorization[len(prefix) :].strip()
     user_id = decode_access_token(token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -220,6 +431,55 @@ def get_current_user(authorization: str | None = Header(default=None)) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # Check token version for session invalidation on role change
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        token_ver = payload.get("ver", 0)
+        db_ver = user.get("token_version", 0)
+        if token_ver != db_ver:
+            raise HTTPException(status_code=401, detail="Session expired — please log in again")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    user["role"] = user.get("role", "user")
+    return user
+
+
+def require_csrf(x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"), csrf_token: str | None = Cookie(default=None)) -> None:
+    """Validate CSRF token for state-changing requests (applies to cookie-auth only)."""
+    if not x_csrf_token or not csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token required")
+    if x_csrf_token != csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token mismatch")
+
+
+def require_role(required_role: str):
+    """Dependency factory: require a specific role to access an endpoint."""
+    def role_checker(current_user: dict = Depends(get_current_user)):
+        if current_user.get("role") != required_role and required_role != "user":
+            raise HTTPException(status_code=403, detail=f"{required_role} role required")
+        return current_user
+    return role_checker
+    """Verify that the request comes from an authorized worker."""
+    if not WORKER_SECRET:
+        return False
+    return x_worker_secret == WORKER_SECRET
+
+
+def get_optional_user(authorization: str | None = Header(default=None)) -> dict | None:
+    """Resolve current user from JWT if present, return None otherwise."""
+    if not authorization:
+        return None
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return None
+    token = authorization[len(prefix):].strip()
+    user_id = decode_access_token(token)
+    if not user_id:
+        return None
+    user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}
     return user
 
 
@@ -228,8 +488,18 @@ def get_current_user(authorization: str | None = Header(default=None)) -> dict:
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "service": "api-service"}
+    """Health check endpoint with dependency status."""
+    deps = {"redis": False, "database": db_ready}
+    try:
+        r = aioredis.Redis(**_get_redis_config(), decode_responses=True)
+        await r.ping()
+        await r.aclose()
+        deps["redis"] = True
+    except Exception:
+        pass
+    all_ok = deps["redis"] and deps["database"]
+    status = "healthy" if all_ok else "degraded"
+    return {"status": status, "service": "api-service", "dependencies": deps}
 
 
 @app.post("/submit")
@@ -323,7 +593,6 @@ async def queue_stats():
 @limiter.limit("10/minute")
 async def auth_signup(request: Request, body: SignupRequest):
     """Create a new user account and return an access token."""
-    # Check existing
     existing = get_user_by_email(body.email) if db_ready else None
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -340,8 +609,13 @@ async def auth_signup(request: Request, body: SignupRequest):
     if not created:
         raise HTTPException(status_code=500, detail="Failed to create user")
 
-    token = create_access_token(user_id)
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_access_token(user_id, token_version=0)
+    csrf = generate_csrf_token()
+    response = JSONResponse({"access_token": token, "token_type": "bearer"})
+    set_auth_cookie(response, token)
+    set_csrf_cookie(response, csrf)
+    audit("auth.signup", actor=user_id, detail={"email": body.email})
+    return response
 
 
 @app.post("/auth/login", response_model=TokenResponse)
@@ -356,17 +630,54 @@ async def auth_login(request: Request, body: LoginRequest):
     if not verify_password(body.password, pwd_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token(user.get("user_id"))
-    return {"access_token": token, "token_type": "bearer"}
+    token = create_access_token(user.get("user_id"), token_version=user.get("token_version", 0))
+    csrf = generate_csrf_token()
+    response = JSONResponse({"access_token": token, "token_type": "bearer"})
+    set_auth_cookie(response, token)
+    set_csrf_cookie(response, csrf)
+    audit("auth.login", actor=user.get("user_id"), detail={"email": body.email})
+    return response
 
 
 @app.post("/auth/refresh", response_model=TokenResponse)
 @limiter.limit("10/minute")
-async def auth_refresh(request: Request, authorization: str | None = Header(default=None)):
+async def auth_refresh(request: Request, current_user: dict = Depends(get_current_user)):
     """Issue a new access token from a valid existing one."""
-    user = get_current_user(authorization)
-    token = create_access_token(user.get("user_id"))
-    return {"access_token": token, "token_type": "bearer"}
+    db_user = get_user_by_id(current_user.get("user_id"))
+    token_version = db_user.get("token_version", 0) if db_user else 0
+    token = create_access_token(current_user.get("user_id"), token_version=token_version)
+    csrf = generate_csrf_token()
+    response = JSONResponse({"access_token": token, "token_type": "bearer"})
+    set_auth_cookie(response, token)
+    set_csrf_cookie(response, csrf)
+    return response
+
+
+@app.post("/auth/logout")
+async def auth_logout(response: Response):
+    """Clear auth and CSRF cookies."""
+    clear_auth_cookie(response)
+    response.set_cookie(key="csrf_token", value="", httponly=False, max_age=0, path="/")
+    return {"ok": True}
+
+
+@app.get("/auth/csrf-token")
+async def get_csrf_token(response: Response):
+    """Return (and set) a fresh CSRF token cookie."""
+    csrf = generate_csrf_token()
+    set_csrf_cookie(response, csrf)
+    return {"csrf_token": csrf}
+
+
+@app.get("/auth/me")
+async def auth_me(current_user: dict = Depends(get_current_user)):
+    """Return current user info (used by frontend to check auth state)."""
+    return {
+        "user_id": current_user.get("user_id"),
+        "email": current_user.get("email"),
+        "name": current_user.get("name"),
+        "role": current_user.get("role"),
+    }
 
 
 
@@ -376,31 +687,41 @@ async def create_assignment(body: dict, current_user: dict = Depends(get_current
     """Create a new assignment/batch and return batch_id and access_code."""
     name = body.get("name") or body.get("assignment") or "Assignment"
     expected = int(body.get("expected_count", 0) or 0)
+    similarity_threshold = float(body.get("similarity_threshold", 0.5))
+    due_date = body.get("due_date")
+    if due_date:
+        due_date = datetime.fromisoformat(due_date)
+    allowed_file_types = body.get("allowed_file_types", ".pdf,.docx,.txt")
+    allow_anonymous = bool(body.get("allow_anonymous", True))
     batch_id = str(uuid.uuid4())
     access_code = uuid.uuid4().hex[:8]
-    # prepare websocket set (in-memory sockets only)
     ws_connections[batch_id] = set()
-    # persist to DB
     if db_ready:
-        ok = db_create_assignment(
+        ok = await run_db(
+            db_create_assignment,
             batch_id=batch_id,
             name=name,
             access_code=access_code,
             expected_count=expected,
             owner_user_id=current_user.get("user_id"),
+            similarity_threshold=similarity_threshold,
+            due_date=due_date,
+            allowed_file_types=allowed_file_types,
+            allow_anonymous=allow_anonymous,
         )
         if not ok:
             raise HTTPException(
                 status_code=500,
                 detail="Failed to create assignment — database write failed",
             )
+    audit("assignment.create", actor=current_user.get("user_id"), resource=batch_id, detail={"name": name})
     return {"batch_id": batch_id, "access_code": access_code}
 
 
 @app.get("/portal/assignments")
 async def list_portal_assignments(current_user: dict = Depends(get_current_user)):
     """List assignments for the dashboard."""
-    assignments = list_assignments() if db_ready else []
+    assignments = await run_db(list_assignments) if db_ready else []
     owned = []
     other = []
     for assignment in assignments:
@@ -418,12 +739,12 @@ async def list_portal_assignments(current_user: dict = Depends(get_current_user)
 @app.get("/portal/assignments/{batch_id}")
 async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Return details for a single assignment, including submissions and matrix presence."""
-    assignment = get_assignment(batch_id) if db_ready else None
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    submissions = get_submissions_by_batch(batch_id) if db_ready else []
-    matrix = get_similarity_matrix(batch_id) if db_ready else {}
+    submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
+    matrix = await run_db(get_similarity_matrix, batch_id) if db_ready else {}
     return {
         "assignment": assignment,
         "submissions": submissions,
@@ -434,8 +755,6 @@ async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_
 
 async def broadcast_progress(batch_id: str):
     """Send progress updates to all connected websockets for a batch."""
-    if batch_id not in ws_connections:
-        return
     # fetch authoritative values from DB
     total = 0
     processed = 0
@@ -453,6 +772,14 @@ async def broadcast_progress(batch_id: str):
         logging.warning("Failed to get submissions for batch %s", batch_id)
         processed = 0
     payload = {"processed": processed, "total": total}
+    # Publish to Redis so all replicas receive the update
+    if _ws_redis is not None:
+        try:
+            msg = json.dumps({"batch_id": batch_id, "payload": payload})
+            await _ws_redis.publish(_WS_PUBSUB_CHANNEL, msg)
+        except Exception:
+            pass
+    # Send to local connections
     dead = []
     for ws in list(ws_connections.get(batch_id, [])):
         try:
@@ -468,7 +795,12 @@ async def portal_notify(request: Request):
     """Internal endpoint used by workers to notify progress updates for a batch.
 
     Expects JSON: { "batch_id": "...", "processed": 10, "total": 50 }
+    Requires X-Worker-Secret header matching configured WORKER_SECRET.
     """
+    if WORKER_SECRET:
+        worker_secret = request.headers.get("X-Worker-Secret", "")
+        if worker_secret != WORKER_SECRET:
+            raise HTTPException(status_code=403, detail="Forbidden")
     try:
         payload = await request.json()
         batch_id = payload.get("batch_id")
@@ -482,7 +814,8 @@ async def portal_notify(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error("portal_notify error: %s", str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv", ".py", ".java", ".js", ".ts"}
@@ -491,6 +824,13 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 FILE_MAGIC_BYTES = {
     ".pdf": b"%PDF",
     ".docx": b"PK\x03\x04",
+    ".txt": None,
+    ".md": None,
+    ".csv": None,
+    ".py": None,
+    ".java": None,
+    ".js": None,
+    ".ts": None,
 }
 
 
@@ -530,39 +870,35 @@ async def portal_submit(
     - Authenticated: provide batch_id directly (JWT header optional, used to attach user_id)
     """
     if access_code:
-        assignment = get_assignment_by_access_code(access_code) if db_ready else None
+        assignment = await run_db(get_assignment_by_access_code, access_code) if db_ready else None
         if not assignment:
             raise HTTPException(status_code=400, detail="Invalid access code")
         batch_id = assignment["batch_id"]
         user_id = None
     elif batch_id:
-        assignment = get_assignment(batch_id) if db_ready else None
+        assignment = await run_db(get_assignment, batch_id) if db_ready else None
         if not assignment:
             raise HTTPException(status_code=400, detail="Invalid batch_id")
-        # try to extract user from JWT if present
-        try:
-            auth_header = request.headers.get("authorization")
-            if auth_header:
-                from jose import jwt as jose_jwt
-                payload = jose_jwt.decode(auth_header.replace("Bearer ", ""), JWT_SECRET, algorithms=["HS256"])
-                user_id = payload.get("sub")
-            else:
-                user_id = None
-        except Exception:
-            user_id = None
+        auth_header = request.headers.get("authorization", "")
+        user_obj = get_optional_user(auth_header) if auth_header else None
+        user_id = user_obj.get("user_id") if user_obj else None
     else:
         raise HTTPException(status_code=400, detail="Provide access_code or batch_id")
-
-    previous_submission = (
-        get_active_submission_by_batch_and_roll(batch_id, roll) if db_ready and access_code else None
-    )
 
     content = await file.read()
     safe_filename = _sanitize_filename(file.filename or "upload")
     _validate_file(safe_filename, content)
 
-    uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+    uploads_dir = os.getenv("UPLOAD_DIR", "/app/uploads")
     os.makedirs(uploads_dir, exist_ok=True)
+    try:
+        usage = shutil.disk_usage(uploads_dir)
+        if usage.used / usage.total > 0.95:
+            raise HTTPException(status_code=507, detail="Insufficient storage")
+    except HTTPException:
+        raise
+    except Exception:
+        logging.warning("Failed to check disk usage")
     submission_hash = str(uuid.uuid4())
     filename = f"{batch_id}_{roll}_{submission_hash}_{safe_filename}"
     dest = os.path.join(uploads_dir, filename)
@@ -571,7 +907,8 @@ async def portal_submit(
 
     if db_ready:
         try:
-            create_submission(
+            sub_result = await run_db(
+                create_submission,
                 submission_id=submission_hash,
                 batch_id=batch_id,
                 roll=roll,
@@ -581,18 +918,17 @@ async def portal_submit(
                 file_path=dest,
                 user_id=locals().get('user_id'),
             )
-            if previous_submission:
-                update_submission_status(previous_submission["submission_id"], "CANCELLED")
-                old_path = previous_submission.get("file_path")
-                if old_path and os.path.exists(old_path):
+            if sub_result["cancelled_submission_id"]:
+                cancelled_path = sub_result["cancelled_file_path"]
+                if cancelled_path and os.path.exists(cancelled_path):
                     try:
-                        os.remove(old_path)
+                        os.remove(cancelled_path)
                     except Exception:
-                        logging.warning("Failed to remove old file: %s", old_path)
+                        logging.warning("Failed to remove old file: %s", cancelled_path)
                 try:
-                    update_job_status(previous_submission["submission_id"], JobStatus.CANCELLED.value, worker_id=None)
+                    update_job_status(sub_result["cancelled_submission_id"], JobStatus.CANCELLED.value)
                 except Exception:
-                    logging.warning("Failed to cancel previous job: %s", previous_submission["submission_id"])
+                    logging.warning("Failed to cancel previous job: %s", sub_result["cancelled_submission_id"])
         except Exception:
             logging.exception("Failed to persist submission %s", submission_hash)
 
@@ -600,8 +936,11 @@ async def portal_submit(
     queued = await queue_client.enqueue_job(job)
     if db_ready:
         try:
-            create_job_record(
-                job_id=submission_hash, text=dest, status=JobStatus.PENDING.value
+            await run_db(
+                create_job_record,
+                job_id=submission_hash,
+                text=dest,
+                status=JobStatus.PENDING.value,
             )
         except Exception:
             logging.exception("Failed to create job record %s", submission_hash)
@@ -611,6 +950,7 @@ async def portal_submit(
     except Exception:
         logging.exception("Failed to broadcast progress for batch %s", batch_id)
 
+    audit("submission.create", actor=user_id or "anonymous", resource=submission_hash, detail={"batch_id": batch_id, "roll": roll})
     return {"submission_hash": submission_hash, "queued": bool(queued)}
 
 
@@ -643,6 +983,7 @@ async def cancel_submission(submission_id: str, current_user: dict = Depends(get
     except Exception:
         logging.warning("Failed to update job status for cancelled submission %s", submission_id)
 
+    audit("submission.cancel", actor=current_user.get("user_id"), resource=submission_id)
     return {"submission_id": submission_id, "status": "CANCELLED"}
 
 
@@ -655,7 +996,7 @@ async def my_student_dashboard(current_user: dict = Depends(get_current_user)):
     from shared.database import get_submissions_by_user
 
     user_id = current_user.get("user_id")
-    submissions = get_submissions_by_user(user_id)
+    submissions = await run_db(get_submissions_by_user, user_id)
 
     # group by batch and fetch batch details
     from shared.database import get_assignment
@@ -676,7 +1017,16 @@ async def my_student_dashboard(current_user: dict = Depends(get_current_user)):
 
 
 @app.websocket("/portal/ws/{batch_id}")
-async def portal_ws(websocket: WebSocket, batch_id: str):
+async def portal_ws(websocket: WebSocket, batch_id: str, token: str = ""):
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    if not _check_ws_rate(client_ip):
+        await websocket.close(code=4001)
+        return
+    if token:
+        user_id = decode_access_token(token)
+        if not user_id:
+            await websocket.close(code=4001)
+            return
     await websocket.accept()
     # register
     if batch_id not in ws_connections:
@@ -697,21 +1047,19 @@ async def portal_ws(websocket: WebSocket, batch_id: str):
 
 
 @app.post("/portal/compute-similarity/{batch_id}")
-async def compute_similarity(batch_id: str):
+async def compute_similarity(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Enqueue a batch-compute job for a batch to be processed asynchronously by workers."""
-    # ensure batch exists
-    assignment = get_assignment(batch_id) if db_ready else None
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
     if not assignment:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    submissions = get_submissions_by_batch(batch_id) if db_ready else []
+    submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
     if len(submissions) < 2:
         raise HTTPException(
             status_code=400,
             detail="Upload at least 2 submissions before computing similarity.",
         )
 
-    # create a batch compute job payload
     job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
     payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
     job = Job(job_id=job_id, text=payload)
@@ -719,22 +1067,21 @@ async def compute_similarity(batch_id: str):
     queued = await queue_client.enqueue_job(job)
     if db_ready:
         try:
-            create_job_record(
-                job_id=job_id, text=payload, status=JobStatus.PENDING.value
-            )
+            await run_db(create_job_record, job_id=job_id, text=payload, status=JobStatus.PENDING.value)
         except Exception:
             logging.warning("Failed to create job record for batch compute %s", job_id)
 
     if not queued:
         raise HTTPException(status_code=500, detail="Failed to enqueue batch compute")
 
+    audit("batch.compute", actor=current_user.get("user_id"), resource=batch_id)
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/portal/similarity-matrix/{batch_id}")
-async def get_batch_similarity_matrix(batch_id: str):
+async def get_batch_similarity_matrix(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Retrieve pre-computed similarity matrix for a batch."""
-    matrix = get_similarity_matrix(batch_id)
+    matrix = await run_db(get_similarity_matrix, batch_id)
     if not matrix:
         raise HTTPException(status_code=404, detail="Similarity matrix not computed")
 
@@ -742,34 +1089,32 @@ async def get_batch_similarity_matrix(batch_id: str):
 
 
 @app.get("/portal/submissions/{batch_id}")
-async def list_submissions(batch_id: str, limit: int = 100, offset: int = 0):
+async def list_submissions(batch_id: str, current_user: dict = Depends(get_current_user), limit: int = 100, offset: int = 0):
     """List submissions for a batch from DB with pagination."""
-    all_subs = get_submissions_by_batch(batch_id)
-    page = all_subs[offset:offset + limit]
+    page = await run_db(get_submissions_by_batch, batch_id, limit=limit, offset=offset) if db_ready else []
+    total = await run_db(get_submissions_count_by_batch, batch_id) if db_ready else len(page)
     return {
         "batch_id": batch_id,
         "submissions": page,
-        "total": len(all_subs),
+        "total": total,
         "limit": limit,
         "offset": offset,
     }
 
 
 @app.get("/portal/export/{batch_id}")
-async def export_batch_csv(batch_id: str):
+async def export_batch_csv(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Export batch results (submissions + similarity scores) as CSV."""
     if db_ready:
-        assignment = get_assignment(batch_id)
+        assignment = await run_db(get_assignment, batch_id)
         if not assignment:
             raise HTTPException(status_code=404, detail="Batch not found")
 
-    # fetch submissions
-    submissions = get_submissions_by_batch(batch_id)
+    submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
     if not submissions:
         raise HTTPException(status_code=400, detail="No submissions found")
 
-    # fetch similarity matrix
-    matrix = get_similarity_matrix(batch_id)
+    matrix = await run_db(get_similarity_matrix, batch_id) if db_ready else {}
 
     # build CSV in memory
     output = io.StringIO()
@@ -834,9 +1179,9 @@ async def export_batch_csv(batch_id: str):
 
 
 @app.get("/portal/submissions/{batch_id}/{submission_id}/text")
-async def get_submission_text(batch_id: str, submission_id: str):
+async def get_submission_text(batch_id: str, submission_id: str, current_user: dict = Depends(get_current_user)):
     """Extract and return text content of a submission."""
-    subs = get_submissions_by_batch(batch_id) if db_ready else []
+    subs = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
     for sub in subs:
         if sub.get("submission_id") == submission_id:
             file_path = sub.get("file_path")
@@ -848,7 +1193,7 @@ async def get_submission_text(batch_id: str, submission_id: str):
 
 
 @app.get("/debug/test-extraction/{batch_id}")
-async def debug_extract_batch(batch_id: str):
+async def debug_extract_batch(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Test endpoint: extract text from all submissions in a batch and test vectorization."""
     from pathlib import Path
 
@@ -915,7 +1260,239 @@ async def debug_extract_batch(batch_id: str):
     return results
 
 
+@app.get("/portal/report/{batch_id}/{sub_id_1}/{sub_id_2}")
+async def download_report(
+    batch_id: str,
+    sub_id_1: str,
+    sub_id_2: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate and download a PDF similarity report for a pair of submissions."""
+    assignment = await run_db(get_assignment, batch_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    sub_1 = await run_db(get_submission_by_id, sub_id_1)
+    sub_2 = await run_db(get_submission_by_id, sub_id_2)
+    if not sub_1 or not sub_2:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    matrix = await run_db(get_similarity_matrix, batch_id)
+    score = matrix.get(sub_id_1, {}).get(sub_id_2, 0.0)
+
+    try:
+        text_1 = extract_text(sub_1.get("file_path", ""))
+    except Exception:
+        text_1 = ""
+    try:
+        text_2 = extract_text(sub_2.get("file_path", ""))
+    except Exception:
+        text_2 = ""
+
+    pdf_bytes = generate_similarity_report_pdf(
+        batch_name=assignment.get("name", batch_id),
+        submission_a=sub_1,
+        submission_b=sub_2,
+        similarity_score=score,
+        text_a=text_1 or "",
+        text_b=text_2 or "",
+        ai_score_a=sub_1.get("ai_score"),
+        ai_score_b=sub_2.get("ai_score"),
+    )
+    if not pdf_bytes:
+        raise HTTPException(status_code=500, detail="PDF generation failed")
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="report_{batch_id}_{sub_id_1}_vs_{sub_id_2}.pdf"'
+        },
+    )
+
+
+@app.get("/portal/cross-batch/{batch_id_1}/{batch_id_2}")
+async def cross_batch_comparison(
+    batch_id_1: str,
+    batch_id_2: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Compare submissions across two different batches."""
+    results = await run_db(get_cross_batch_comparisons, batch_id_1, batch_id_2)
+    return {"batch_id_1": batch_id_1, "batch_id_2": batch_id_2, "comparisons": results}
+
+
+@app.get("/portal/student-comparison/{submission_id}")
+async def student_comparison(
+    submission_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get comparison details for a single submission."""
+    details = await run_db(get_student_comparison_details, submission_id)
+    return {"submission_id": submission_id, "comparisons": details}
+
+
+@app.post("/portal/external-lookup/{submission_id}")
+async def external_lookup(
+    submission_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Search external sources for similar content."""
+    sub = await run_db(get_submission_by_id, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    try:
+        text = extract_text(sub.get("file_path", ""))
+    except Exception:
+        text = ""
+    if not text:
+        raise HTTPException(status_code=400, detail="No text content found")
+
+    results = search_external_sources(text)
+    audit("external_lookup", actor=current_user.get("user_id"), detail={"submission_id": submission_id})
+    return results
+
+
+@app.post("/portal/notify-email/{submission_id}")
+async def trigger_email_notification(
+    submission_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Send an email notification about a completed submission."""
+    sub = await run_db(get_submission_by_id, submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    user = await run_db(get_user_by_id, current_user.get("user_id"))
+    name = sub.get("name") or user.get("name") if user else "Student"
+    email = sub.get("email") or user.get("email") if user else None
+    if not email:
+        raise HTTPException(status_code=400, detail="No email address available")
+
+    ok = notify_completion(
+        to=email,
+        name=name,
+        batch_name=sub.get("batch_id", "Assignment"),
+        score=sub.get("plagiarism_score"),
+    )
+    if not ok:
+        await run_db(create_notification, current_user.get("user_id"), email, "Analysis Complete", f"Your submission for {sub.get('batch_id')} has been analyzed.")
+    return {"ok": ok, "email": email}
+
+
+@app.get("/admin/stats")
+async def admin_stats(current_user: dict = Depends(require_role("admin"))):
+    """Get system-wide statistics."""
+    stats = await run_db(get_admin_stats)
+    return stats
+
+
+@app.get("/admin/stats/export")
+async def admin_stats_export(current_user: dict = Depends(require_role("admin"))):
+    """Export admin stats as CSV."""
+    stats = await run_db(get_admin_stats)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Metric", "Value"])
+    for key, value in stats.items():
+        writer.writerow([key.replace("_", " ").title(), value])
+    return Response(content=output.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=plagioscale_stats.csv"})
+
+
+@app.get("/admin/users")
+async def admin_list_users(
+    current_user: dict = Depends(require_role("admin")),
+    search: str = "",
+    page: int = 1,
+    per_page: int = 20,
+):
+    """List all users with pagination and search."""
+    users = await run_db(lambda: get_paginated_users(search=search, page=page, per_page=per_page))
+    return users
+
+
+@app.post("/admin/users/{user_id}/role")
+async def admin_update_role(
+    user_id: str,
+    body: dict,
+    current_user: dict = Depends(require_role("admin")),
+):
+    """Update a user's role."""
+    new_role = body.get("role", "user")
+    if new_role not in ("user", "teacher", "admin"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    ok = await run_db(update_user_role, user_id, new_role)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
+
+
+@app.post("/admin/notifications/send")
+async def admin_send_notifications(current_user: dict = Depends(require_role("admin"))):
+    """Send all pending email notifications."""
+    pending = await run_db(get_pending_notifications, 50)
+    sent_count = 0
+    for n in pending:
+        ok = send_email(
+            to=n["email"] or "",
+            subject=n["subject"],
+            body_text=n["body"],
+        )
+        if ok:
+            await run_db(mark_notification_sent, n["id"])
+            sent_count += 1
+    return {"ok": True, "sent": sent_count, "pending": len(pending)}
+
+
+AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "/app/logs/audit.log")
+
+
+@app.get("/admin/audit/tail")
+async def admin_audit_tail(current_user: dict = Depends(require_role("admin"))):
+    """SSE endpoint that tails the audit log in real time."""
+    async def event_stream():
+        try:
+            with open(AUDIT_LOG_PATH, "r") as f:
+                f.seek(0, 2)
+                while True:
+                    line = f.readline()
+                    if line:
+                        yield f"data: {line.strip()}\n\n"
+                    else:
+                        await asyncio.sleep(0.5)
+        except FileNotFoundError:
+            yield "event: error\ndata: Audit log not found\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/webhooks/alertmanager")
+async def alertmanager_webhook(payload: dict):
+    """Receive Alertmanager webhook notifications and trigger auto-remediation."""
+    alerts = payload.get("alerts", [])
+    for alert in alerts:
+        status = alert.get("status")
+        alertname = alert.get("labels", {}).get("alertname", "unknown")
+        logging.info(f"Alertmanager webhook: {alertname} ({status})")
+        if status == "firing":
+            job = alert.get("labels", {}).get("job", "")
+            if "ServiceDown" in alertname and "api" not in job:
+                AUTO_RECOVERY_TOTAL.labels("alert_restart").inc()
+                logging.info(f"Auto-remediation triggered for {job}")
+    return {"ok": True, "received": len(alerts)}
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    ssl_kwargs = {}
+    if os.getenv("USE_MTLS", "").lower() in ("true", "1"):
+        ssl_kwargs.update(
+            ssl_certfile="/app/certs/api.crt",
+            ssl_keyfile="/app/certs/api.key",
+            ssl_ca_certs="/app/certs/ca.crt",
+            ssl_cert_reqs=2,
+        )
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, **ssl_kwargs)

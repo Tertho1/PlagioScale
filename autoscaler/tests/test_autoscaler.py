@@ -75,12 +75,13 @@ class TestAutoscalerInit:
             assert a.cooldown_seconds == 30
 
     def test_creds_defaults(self, mock_redis, mock_docker, mock_prometheus):
-        a = QueueBasedAutoscaler()
-        assert a.redis_host == "redis"
-        assert a.redis_port == 6379
-        assert a.min_workers == 1
-        assert a.max_workers == 5
-        assert a.cooldown_seconds == 60
+        with patch.dict("os.environ", {"PATH": os.environ.get("PATH", "")}, clear=True):
+            a = QueueBasedAutoscaler()
+            assert a.redis_host == "redis"
+            assert a.redis_port == 6379
+            assert a.min_workers == 1
+            assert a.max_workers == 5
+            assert a.cooldown_seconds == 60
 
 
 class TestQueueLength:
@@ -169,8 +170,9 @@ class TestScaleWorkers:
         template = MagicMock()
         template.image = "plagioscale-worker:latest"
         template.attrs = {
-            "Config": {"Env": ["FOO=bar", "WORKER_ID=worker-1"]},
+            "Config": {"Env": ["FOO=bar", "WORKER_ID=worker-1"], "Image": "plagioscale-worker:latest"},
             "NetworkSettings": {"Networks": {"plagioscale-network": {}}},
+            "Mounts": [],
         }
         autoscaler.docker_client.containers.list.return_value = [template]
 

@@ -1,22 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const MAX_RECONNECT_DELAY = 60000;
+const BASE_RECONNECT_DELAY = 2000;
 
 export function useBatchProgress(batchId) {
   const [progress, setProgress] = useState({ processed: 0, total: 0 });
   const wsRef = useRef(null);
+  const retryRef = useRef(0);
+  const cancelledRef = useRef(false);
 
-  useEffect(() => {
-    if (!batchId) return;
-    let cancelled = false;
+  const connect = useCallback(() => {
+    if (!batchId || cancelledRef.current) return;
 
     try {
-      const ws = new WebSocket(
-        API_BASE.replace("http", "ws") + `/portal/ws/${batchId}`,
-      );
+      const token = getToken();
+      const wsUrl = API_BASE.replace("http", "ws") + `/portal/ws/${batchId}`;
+      const ws = new WebSocket(token ? `${wsUrl}?token=${token}` : wsUrl);
 
       ws.onmessage = (ev) => {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         try {
           const d = JSON.parse(ev.data);
           if (typeof d.processed === "number") {
@@ -28,22 +32,43 @@ export function useBatchProgress(batchId) {
       };
 
       ws.onerror = () => {
-        if (!cancelled) setProgress((p) => ({ ...p, error: true }));
+        if (!cancelledRef.current) setProgress((p) => ({ ...p, error: true }));
+      };
+
+      ws.onclose = () => {
+        if (cancelledRef.current) return;
+        const delay = Math.min(
+          BASE_RECONNECT_DELAY * Math.pow(2, retryRef.current),
+          MAX_RECONNECT_DELAY,
+        );
+        retryRef.current += 1;
+        setTimeout(connect, delay);
+      };
+
+      ws.onopen = () => {
+        retryRef.current = 0;
       };
 
       wsRef.current = ws;
     } catch {
-      setProgress((p) => ({ ...p, error: true }));
+      if (!cancelledRef.current) setProgress((p) => ({ ...p, error: true }));
     }
+  }, [batchId]);
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    retryRef.current = 0;
+
+    connect();
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
     };
-  }, [batchId]);
+  }, [connect]);
 
   return progress;
 }

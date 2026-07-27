@@ -58,7 +58,7 @@ def check_autoscaler_state():
     """Query the monitoring service for current cluster state."""
     results = {}
     try:
-        resp = requests.get("http://localhost:8090/api/overview", timeout=3)
+        resp = requests.get("http://localhost:8090/api/overview", timeout=5)
         if resp.ok:
             data = resp.json()
             results["monitor"] = {

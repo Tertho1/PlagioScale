@@ -30,7 +30,7 @@ export default function StudentDashboard() {
         navigate('/auth')
         return
       }
-      const res = await fetch(`${API_BASE}/portal/my`, { headers })
+      const res = await fetch(`${API_BASE}/portal/my`, { headers: await getAuthHeaders(), credentials: "include" })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setBatches(data.batches || [])
@@ -61,7 +61,8 @@ export default function StudentDashboard() {
       if (studentName.trim()) fd.append('name', studentName.trim())
       const res = await fetch(`${API_BASE}/portal/submit`, {
         method: 'POST',
-        headers: { Authorization: headers.Authorization },
+        credentials: 'include',
+        headers: await getAuthHeaders(),
         body: fd,
       })
       if (!res.ok) throw new Error(await res.text())
@@ -76,21 +77,6 @@ export default function StudentDashboard() {
 
   return (
     <div className="page-shell">
-      <div className="top-nav">
-        <Link to="/" className="brand-mark">
-          <span className="brand-badge">P</span>
-          <span className="brand-copy">
-            <strong>PlagioScale</strong>
-            <span>Student dashboard</span>
-          </span>
-        </Link>
-        <div className="nav-links">
-          <Link to="/" className="nav-link">Home</Link>
-          <span className="nav-link" style={{cursor:'pointer'}} onClick={() => { clearToken(); navigate('/auth') }}>
-            Logout
-          </span>
-        </div>
-      </div>
 
       <section className="hero-card" style={{ marginBottom: 20 }}>
         <div className="eyebrow">My submissions</div>
@@ -169,7 +155,7 @@ export default function StudentDashboard() {
           <div className="section-label">History</div>
           <h2 className="section-title">Your submissions</h2>
           {loading ? (
-            <p className="section-copy">Loading...</p>
+            <div className="loading-block"><div className="spinner"></div> Loading submissions...</div>
           ) : batches.length === 0 ? (
             <p className="section-copy">No submissions yet. Upload a file to a batch above.</p>
           ) : (
@@ -183,6 +169,7 @@ export default function StudentDashboard() {
                       <th>Status</th>
                       <th>Score</th>
                       <th>Submitted</th>
+                      <th>Details</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -196,6 +183,7 @@ export default function StudentDashboard() {
                         </td>
                         <td>{s.plagiarism_score != null ? `${(s.plagiarism_score * 100).toFixed(1)}%` : '-'}</td>
                         <td>{s.created_at ? new Date(s.created_at).toLocaleDateString() : '-'}</td>
+                        <td><a href={`/student/comparison/${s.submission_id}`} className="btn" style={{ fontSize: 12, padding: '4px 8px' }}>View</a></td>
                       </tr>
                     ))}
                   </tbody>

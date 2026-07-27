@@ -1,0 +1,57 @@
+{
+  "title": "Audit & Operations",
+  "uid": "plagioscale-audit",
+  "schemaVersion": 30,
+  "version": 1,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["plagioscale"],
+  "panels": [
+    {
+      "title": "Requests Submitted (1m rate)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "rate(plagioscale_requests_submitted_total[1m])",
+        "legendFormat": "requests/s"
+      }],
+      "fieldConfig": { "defaults": { "unit": "cps" } }
+    },
+    {
+      "title": "Queue Length",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "plagioscale_monitor_queue_length",
+        "legendFormat": "queue"
+      }]
+    },
+    {
+      "title": "Workers Running",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "targets": [{
+        "expr": "plagioscale_monitor_workers",
+        "legendFormat": "workers"
+      }]
+    },
+    {
+      "title": "Job Throughput (1m rate)",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{
+        "expr": "rate(plagioscale_worker_jobs_processed_total[1m])",
+        "legendFormat": "jobs/s"
+      }]
+    },
+    {
+      "title": "Scale Events",
+      "type": "graph",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{
+        "expr": "plagioscale_autoscaler_scale_events_total",
+        "legendFormat": "events"
+      }]
+    }
+  ]
+}

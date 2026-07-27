@@ -24,10 +24,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: plagioscale-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-plagio_redis_pass}
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-plagio_redis_pass}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -40,19 +41,32 @@ services:
     cpus: 0.25
 
   api-service:
+    image: ${IMAGE_REPO:-ghcr.io}/${IMAGE_OWNER:-anomalyco}/plagioscale-api-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: api-service/Dockerfile
+    user: "65532:65532"
     ports:
       - "8000:8000"
+      - "8443:8443"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-plagio_redis_pass}
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=plagioscale
       - DB_USER=plagio
       - DB_PASSWORD=plagio_pass
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-plagioscale-2024}
+      - WORKER_SECRET=${WORKER_SECRET:-dev-worker-secret-plagioscale-2024}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@plagioscale.local}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - USE_MTLS=${USE_MTLS:-false}
     depends_on:
       redis:
         condition: service_healthy
@@ -60,13 +74,21 @@ services:
         condition: service_healthy
     volumes:
       - uploads_data:/app/uploads
+      - ./certs:/app/certs:ro
     networks:
       - plagioscale-network
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   frontend:
+    image: ${IMAGE_REPO:-ghcr.io}/${IMAGE_OWNER:-anomalyco}/plagioscale-frontend:${IMAGE_TAG:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -77,14 +99,22 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.25
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   worker:
+    image: ${IMAGE_REPO:-ghcr.io}/${IMAGE_OWNER:-anomalyco}/plagioscale-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: worker-service/Dockerfile
+    user: "65532:65532"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-plagio_redis_pass}
       - WORKER_ID=
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -92,6 +122,7 @@ services:
       - DB_USER=plagio
       - DB_PASSWORD=plagio_pass
       - PYTHONUNBUFFERED=1
+      - USE_MTLS=${USE_MTLS:-false}
     depends_on:
       redis:
         condition: service_healthy
@@ -100,20 +131,30 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - worker_storage:/app/storage
+      - ./certs:/app/certs:ro
     networks:
       - plagioscale-network
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 2048m
     cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   autoscaler:
+    image: ${IMAGE_REPO:-ghcr.io}/${IMAGE_OWNER:-anomalyco}/plagioscale-autoscaler:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: autoscaler/Dockerfile
     container_name: plagioscale-autoscaler
+    user: "0"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-plagio_redis_pass}
       - COMPOSE_PROJECT_NAME=plagioscale
       - SCALE_UP_THRESHOLD=10
       - SCALE_DOWN_THRESHOLD=3
@@ -125,6 +166,7 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./certs:/app/certs:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -135,21 +177,31 @@ services:
       - "8002:8002"
     mem_limit: 128m
     cpus: 0.25
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/metrics')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   monitoring-service:
+    image: ${IMAGE_REPO:-ghcr.io}/${IMAGE_OWNER:-anomalyco}/plagioscale-monitoring-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: monitoring-service/Dockerfile
     container_name: plagioscale-monitoring
+    user: "0"
     ports:
       - "8090:8090"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-plagio_redis_pass}
       - COMPOSE_PROJECT_NAME=plagioscale
       - AUTOSCALER_EVENTS_KEY=autoscaler_events
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./certs:/app/certs:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -158,12 +210,19 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.25
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   prometheus:
     image: prom/prometheus:latest
     container_name: plagioscale-prometheus
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -177,6 +236,33 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: plagioscale-alertmanager
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    depends_on:
+      - prometheus
+    networks:
+      - plagioscale-network
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.1
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   grafana:
     image: grafana/grafana:9.0.0
@@ -187,6 +273,8 @@ services:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
     depends_on:
       - prometheus
     networks:
@@ -194,21 +282,12 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
-
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: plagioscale-portainer
-    ports:
-      - "8080:8000"
-      - "9000:9000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-    networks:
-      - plagioscale-network
-    restart: unless-stopped
-    mem_limit: 256m
-    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
 networks:
   plagioscale-network:
@@ -221,4 +300,3 @@ volumes:
   worker_storage:
   prometheus_data:
   grafana_data:
-  portainer_data:

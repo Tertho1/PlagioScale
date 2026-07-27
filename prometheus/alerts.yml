@@ -1,0 +1,48 @@
+groups:
+  - name: plagioscale_alerts
+    interval: 10s
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "{{ $labels.instance }} has been unreachable for 30s"
+
+      - alert: QueueDepthHigh
+        expr: plagioscale_queue_length > 20
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue depth high ({{ $value }})"
+          description: "Job queue has {{ $value }} pending items"
+
+      - alert: JobFailureRate
+        expr: rate(plagioscale_jobs_failed_total[5m]) > 0.1
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "High job failure rate"
+          description: "Job failure rate is {{ $value }} failures/sec over 5m"
+
+      - alert: ApiLatencyHigh
+        expr: rate(plagioscale_http_request_duration_seconds_sum[5m]) / rate(plagioscale_http_request_duration_seconds_count[5m]) > 1.0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "API latency high ({{ $value }}s)"
+          description: "Average API latency is {{ $value }}s over 5m"
+
+      - alert: DatabaseConnectionLost
+        expr: plagioscale_db_ready == 0
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection lost"
+          description: "API service cannot connect to PostgreSQL"

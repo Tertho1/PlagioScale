@@ -28,6 +28,15 @@ export default function StudentSubmit(){
   async function handleSubmit(e){
     e.preventDefault()
     if(!file || !roll || !accessCode) { setStatus('Please provide roll, access code and a file'); return }
+    if (!roll.trim()) { setStatus('Error: Roll number is required'); return }
+    if (!accessCode.trim()) { setStatus('Error: Access code is required'); return }
+    if (!file) { setStatus('Error: Please select a file to upload'); return }
+    if (file.size > 10 * 1024 * 1024) { setStatus('Error: File too large (max 10 MB)'); return }
+    const ext = '.' + file.name.split('.').pop().toLowerCase()
+    if (!['.pdf','.docx','.txt','.md','.csv','.py','.java','.js','.ts'].includes(ext)) {
+      setStatus('Error: File type not allowed')
+      return
+    }
     const fd = new FormData()
     fd.append('file', file)
     fd.append('roll', roll)
@@ -42,7 +51,7 @@ export default function StudentSubmit(){
     setStatus('Uploading...')
     setIsUploading(true)
     try{
-      const res = await fetch(`${API_BASE}/portal/submit`, { method: 'POST', body: fd })
+      const res = await fetch(`${API_BASE}/portal/submit`, { method: 'POST', body: fd, credentials: 'include' })
       if(!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setStatus('Received: ' + (data.submission_hash || data.job_id || 'ok'))
@@ -57,23 +66,6 @@ export default function StudentSubmit(){
 
   return (
     <div className="page-shell">
-      <div className="top-nav">
-        <Link to="/" className="brand-mark">
-          <span className="brand-badge">P</span>
-          <span className="brand-copy">
-            <strong>PlagioScale</strong>
-            <span>Student submission portal</span>
-          </span>
-        </Link>
-        <div className="nav-links">
-          <Link to="/" className="nav-link">Home</Link>
-          {token ? (
-            <Link to="/dashboard" className="nav-link">Dashboard</Link>
-          ) : (
-            <Link to="/auth" className="nav-link">Login / Sign up</Link>
-          )}
-        </div>
-      </div>
 
       <section className="hero-card" style={{marginBottom:20}}>
         <div className="eyebrow">Step 1 · Student upload</div>

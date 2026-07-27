@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -63,6 +64,10 @@ class Assignment(Base):
     access_code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    similarity_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    allowed_file_types: Mapped[str] = mapped_column(Text, nullable=False, default=".pdf,.docx,.txt")
+    allow_anonymous: Mapped[bool] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow
     )
@@ -99,6 +104,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow
     )
@@ -119,6 +126,23 @@ class SimilarityResult(Base):
     )
 
 
+class Notification(Base):
+    """Outbound email notification queue."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    subject: Mapped[str] = mapped_column(String(256), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    sent: Mapped[bool] = mapped_column(Integer, default=0)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow
+    )
+
+
 @contextmanager
 def get_session() -> Session:
     session = SessionLocal()
@@ -132,28 +156,45 @@ def get_session() -> Session:
         session.close()
 
 
-def init_db() -> bool:
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as exc:
-        print(f"⚠ Database init failed (table creation): {exc}")
-        return False
-    try:
-        migrate_db()
-    except Exception as exc:
-        print(f"⚠ Database migration failed (non-fatal): {exc}")
-    return True
+def init_db(max_retries: int = 5, delay: float = 2.0) -> bool:
+    for attempt in range(max_retries):
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as exc:
+            print(f"⚠ Database init failed (table creation): {exc}")
+            if attempt < max_retries - 1:
+                print(f"  Retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            return False
+        try:
+            migrate_db()
+        except Exception as exc:
+            print(f"⚠ Database migration failed (non-fatal): {exc}")
+        return True
+    return False
 
 
 def migrate_db() -> None:
     """Apply lightweight, idempotent schema migrations for existing databases."""
     statements = [
         "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(64)",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS similarity_threshold FLOAT NOT NULL DEFAULT 0.5",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS due_date TIMESTAMP",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS allowed_file_types TEXT NOT NULL DEFAULT '.pdf,.docx,.txt'",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS allow_anonymous INTEGER NOT NULL DEFAULT 1",
         "CREATE INDEX IF NOT EXISTS idx_assignments_owner_user_id ON assignments (owner_user_id)",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS email VARCHAR(256)",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'user'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
         "CREATE INDEX IF NOT EXISTS idx_submissions_user_id ON submissions (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_submissions_batch_id ON submissions (batch_id)",
+        "CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions (status)",
+        "CREATE INDEX IF NOT EXISTS idx_similarity_results_batch_id ON similarity_results (batch_id)",
+        "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)",
         "DROP INDEX IF EXISTS ux_submissions_batch_roll",
     ]
     with engine.begin() as connection:
@@ -313,6 +354,10 @@ def create_assignment(
     access_code: str,
     expected_count: int = 0,
     owner_user_id: Optional[str] = None,
+    similarity_threshold: float = 0.5,
+    due_date: Optional[datetime] = None,
+    allowed_file_types: str = ".pdf,.docx,.txt",
+    allow_anonymous: bool = True,
 ) -> bool:
     try:
         with get_session() as session:
@@ -323,6 +368,10 @@ def create_assignment(
                     access_code=access_code,
                     expected_count=expected_count,
                     owner_user_id=owner_user_id,
+                    similarity_threshold=similarity_threshold,
+                    due_date=due_date,
+                    allowed_file_types=allowed_file_types,
+                    allow_anonymous=allow_anonymous,
                 )
             )
         return True
@@ -340,7 +389,16 @@ def create_submission(
     filename: str,
     file_path: str,
     user_id: Optional[str] = None,
-) -> bool:
+) -> dict:
+    """
+    Create a new submission, cancelling any previous active submission for the same (batch, roll).
+
+    Returns a dict with:
+        success: bool
+        cancelled_submission_id: Optional[str] - ID of previously active submission that was cancelled
+        cancelled_file_path: Optional[str] - file path of the cancelled submission (for cleanup)
+    """
+    result = {"success": False, "cancelled_submission_id": None, "cancelled_file_path": None}
     try:
         with get_session() as session:
             existing = (
@@ -353,7 +411,11 @@ def create_submission(
                 .with_for_update()
                 .first()
             )
+            cancelled_id = None
+            cancelled_path = None
             if existing:
+                cancelled_id = existing.submission_id
+                cancelled_path = existing.file_path
                 existing.status = "CANCELLED"
             session.add(
                 Submission(
@@ -368,20 +430,51 @@ def create_submission(
                     status="ACTIVE",
                 )
             )
-        return True
+        result["success"] = True
+        result["cancelled_submission_id"] = cancelled_id
+        result["cancelled_file_path"] = cancelled_path
+        return result
     except Exception as exc:
         print(f"⚠ Failed creating submission {submission_id}: {exc}")
-        return False
+        return result
 
 
-def get_submissions_by_batch(batch_id: str) -> list:
+def get_submission_by_id(submission_id: str) -> Optional[dict]:
     try:
         with get_session() as session:
-            records = (
+            record = session.get(Submission, submission_id)
+            if not record:
+                return None
+            return {
+                "submission_id": record.submission_id,
+                "batch_id": record.batch_id,
+                "user_id": record.user_id,
+                "roll": record.roll,
+                "name": record.name,
+                "email": record.email,
+                "filename": record.filename,
+                "file_path": record.file_path,
+                "status": record.status,
+                "ai_score": record.ai_score,
+                "plagiarism_score": record.plagiarism_score,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading submission {submission_id}: {exc}")
+        return None
+
+
+def get_submissions_by_batch(batch_id: str, limit: int = None, offset: int = 0) -> list:
+    try:
+        with get_session() as session:
+            q = (
                 session.query(Submission)
                 .filter(Submission.batch_id == batch_id, Submission.status == "ACTIVE")
-                .all()
+                .order_by(Submission.created_at)
             )
+            if limit is not None:
+                q = q.limit(limit).offset(offset)
+            records = q.all()
             return [
                 {
                     "submission_id": r.submission_id,
@@ -441,6 +534,10 @@ def get_assignment(batch_id: str) -> Optional[dict]:
                 "access_code": record.access_code,
                 "owner_user_id": record.owner_user_id,
                 "expected_count": record.expected_count,
+                "similarity_threshold": record.similarity_threshold,
+                "due_date": record.due_date.isoformat() if record.due_date else None,
+                "allowed_file_types": record.allowed_file_types,
+                "allow_anonymous": bool(record.allow_anonymous),
                 "created_at": (
                     record.created_at.isoformat() if record.created_at else None
                 ),
@@ -466,6 +563,10 @@ def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
                 "access_code": record.access_code,
                 "owner_user_id": record.owner_user_id,
                 "expected_count": record.expected_count,
+                "similarity_threshold": record.similarity_threshold,
+                "due_date": record.due_date.isoformat() if record.due_date else None,
+                "allowed_file_types": record.allowed_file_types,
+                "allow_anonymous": bool(record.allow_anonymous),
                 "created_at": (
                     record.created_at.isoformat() if record.created_at else None
                 ),
@@ -478,7 +579,7 @@ def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
 def list_assignments() -> list:
     try:
         with get_session() as session:
-            records = session.query(Assignment).all()
+            records = session.query(Assignment).order_by(Assignment.created_at.desc()).all()
             return [
                 {
                     "batch_id": r.batch_id,
@@ -486,6 +587,10 @@ def list_assignments() -> list:
                     "access_code": r.access_code,
                     "owner_user_id": r.owner_user_id,
                     "expected_count": r.expected_count,
+                    "similarity_threshold": r.similarity_threshold,
+                    "due_date": r.due_date.isoformat() if r.due_date else None,
+                    "allowed_file_types": r.allowed_file_types,
+                    "allow_anonymous": bool(r.allow_anonymous),
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
                 for r in records
@@ -525,6 +630,17 @@ def get_active_submission_by_batch_and_roll(batch_id: str, roll: str) -> Optiona
         return None
 
 
+def get_submissions_count_by_batch(batch_id: str) -> int:
+    try:
+        with get_session() as session:
+            return session.query(Submission).filter(
+                Submission.batch_id == batch_id, Submission.status == "ACTIVE"
+            ).count()
+    except Exception as exc:
+        print(f"⚠ Failed counting submissions for batch {batch_id}: {exc}")
+        return 0
+
+
 def update_submission_status(submission_id: str, status: str) -> bool:
     try:
         with get_session() as session:
@@ -535,6 +651,19 @@ def update_submission_status(submission_id: str, status: str) -> bool:
         return True
     except Exception as exc:
         print(f"⚠ Failed updating submission {submission_id}: {exc}")
+        return False
+
+
+def update_submission_ai_score(submission_id: str, ai_score: float) -> bool:
+    """Update the AI detection score for a single submission."""
+    try:
+        with get_session() as session:
+            record = session.get(Submission, submission_id)
+            if record:
+                record.ai_score = ai_score
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed updating ai_score for {submission_id}: {exc}")
         return False
 
 
@@ -604,7 +733,7 @@ def get_similarity_matrix(batch_id: str) -> dict:
 
 
 ## User helpers
-def create_user(user_id: str, email: str, name: Optional[str], password_hash: str) -> bool:
+def create_user(user_id: str, email: str, name: Optional[str], password_hash: str, role: str = "user") -> bool:
     try:
         with get_session() as session:
             session.add(
@@ -613,6 +742,8 @@ def create_user(user_id: str, email: str, name: Optional[str], password_hash: st
                     email=email,
                     name=name,
                     password_hash=password_hash,
+                    role=role,
+                    token_version=0,
                 )
             )
         return True
@@ -631,7 +762,9 @@ def get_user_by_email(email: str) -> Optional[dict]:
                 "user_id": record.user_id,
                 "email": record.email,
                 "name": record.name,
+                "role": record.role,
                 "password_hash": record.password_hash,
+                "token_version": record.token_version,
                 "created_at": record.created_at.isoformat() if record.created_at else None,
             }
     except Exception as exc:
@@ -649,8 +782,216 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
                 "user_id": record.user_id,
                 "email": record.email,
                 "name": record.name,
+                "role": record.role,
+                "token_version": record.token_version,
                 "created_at": record.created_at.isoformat() if record.created_at else None,
             }
     except Exception as exc:
         print(f"⚠ Failed reading user {user_id}: {exc}")
         return None
+
+
+def get_paginated_users(search: str = "", page: int = 1, per_page: int = 20) -> dict:
+    try:
+        with get_session() as session:
+            query = session.query(User)
+            if search:
+                pattern = f"%{search}%"
+                query = query.filter(
+                    User.email.ilike(pattern) | User.name.ilike(pattern)
+                )
+            total = query.count()
+            records = query.order_by(User.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
+            users = [
+                {
+                    "user_id": r.user_id,
+                    "email": r.email,
+                    "name": r.name,
+                    "role": r.role,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ]
+            return {"users": users, "total": total, "page": page, "per_page": per_page}
+    except Exception as exc:
+        print(f"⚠ Failed listing users: {exc}")
+        return {"users": [], "total": 0, "page": page, "per_page": per_page}
+
+
+def update_user_role(user_id: str, new_role: str) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(User, user_id)
+            if not record:
+                return False
+            record.role = new_role
+            record.token_version = (record.token_version or 0) + 1
+            return True
+    except Exception as exc:
+        print(f"⚠ Failed updating role for {user_id}: {exc}")
+        return False
+
+
+def get_admin_stats() -> dict:
+    try:
+        with get_session() as session:
+            total_users = session.query(User).count()
+            total_assignments = session.query(Assignment).count()
+            total_submissions = session.query(Submission).count()
+            active_submissions = session.query(Submission).filter(Submission.status == "ACTIVE").count()
+            total_similarity_results = session.query(SimilarityResult).count()
+            pending_notifications = session.query(Notification).filter(Notification.sent == 0).count()
+            return {
+                "total_users": total_users,
+                "total_assignments": total_assignments,
+                "total_submissions": total_submissions,
+                "active_submissions": active_submissions,
+                "total_similarity_results": total_similarity_results,
+                "pending_notifications": pending_notifications,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed getting admin stats: {exc}")
+        return {}
+
+
+def get_cross_batch_comparisons(batch_id_1: str, batch_id_2: str) -> list:
+    try:
+        with get_session() as session:
+            subs_1 = (
+                session.query(Submission)
+                .filter(Submission.batch_id == batch_id_1, Submission.status == "ACTIVE")
+                .all()
+            )
+            subs_2 = (
+                session.query(Submission)
+                .filter(Submission.batch_id == batch_id_2, Submission.status == "ACTIVE")
+                .all()
+            )
+            results = []
+            for s1 in subs_1:
+                for s2 in subs_2:
+                    result = (
+                        session.query(SimilarityResult)
+                        .filter(
+                            SimilarityResult.batch_id == batch_id_1,
+                            SimilarityResult.submission_id_1 == s1.submission_id,
+                            SimilarityResult.submission_id_2 == s2.submission_id,
+                        )
+                        .first()
+                    )
+                    if result:
+                        results.append(
+                            {
+                                "batch_id_1": batch_id_1,
+                                "batch_id_2": batch_id_2,
+                                "submission_id_1": s1.submission_id,
+                                "roll_1": s1.roll,
+                                "name_1": s1.name,
+                                "submission_id_2": s2.submission_id,
+                                "roll_2": s2.roll,
+                                "name_2": s2.name,
+                                "similarity_score": result.similarity_score,
+                            }
+                        )
+            results.sort(key=lambda r: r["similarity_score"], reverse=True)
+            return results
+    except Exception as exc:
+        print(f"⚠ Failed cross-batch comparison: {exc}")
+        return []
+
+
+def get_student_comparison_details(submission_id: str) -> list:
+    try:
+        with get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if not sub:
+                return []
+            results = (
+                session.query(SimilarityResult)
+                .filter(
+                    SimilarityResult.batch_id == sub.batch_id,
+                    (SimilarityResult.submission_id_1 == submission_id)
+                    | (SimilarityResult.submission_id_2 == submission_id),
+                )
+                .all()
+            )
+            pairs = []
+            for r in results:
+                other_id = r.submission_id_2 if r.submission_id_1 == submission_id else r.submission_id_1
+                other = session.get(Submission, other_id)
+                pairs.append(
+                    {
+                        "submission_id": submission_id,
+                        "roll": sub.roll,
+                        "name": sub.name,
+                        "ai_score": sub.ai_score,
+                        "plagiarism_score": sub.plagiarism_score,
+                        "compared_with_id": other_id,
+                        "compared_with_roll": other.roll if other else "?",
+                        "compared_with_name": other.name if other else "?",
+                        "similarity_score": r.similarity_score,
+                    }
+                )
+            pairs.sort(key=lambda p: p["similarity_score"], reverse=True)
+            return pairs
+    except Exception as exc:
+        print(f"⚠ Failed loading comparison details: {exc}")
+        return []
+
+
+def create_notification(user_id: str, email: str, subject: str, body: str) -> bool:
+    try:
+        with get_session() as session:
+            notification = Notification(
+                id=None,
+                user_id=user_id,
+                email=email,
+                subject=subject,
+                body=body,
+                sent=0,
+            )
+            session.add(notification)
+            return True
+    except Exception as exc:
+        print(f"⚠ Failed creating notification for {user_id}: {exc}")
+        return False
+
+
+def get_pending_notifications(limit: int = 50) -> list:
+    try:
+        with get_session() as session:
+            records = (
+                session.query(Notification)
+                .filter(Notification.sent == 0)
+                .order_by(Notification.created_at.asc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "user_id": r.user_id,
+                    "email": r.email,
+                    "subject": r.subject,
+                    "body": r.body,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ]
+    except Exception as exc:
+        print(f"⚠ Failed reading pending notifications: {exc}")
+        return []
+
+
+def mark_notification_sent(notification_id: int) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(Notification, notification_id)
+            if not record:
+                return False
+            record.sent = 1
+            record.sent_at = _utcnow()
+            return True
+    except Exception as exc:
+        print(f"⚠ Failed marking notification sent: {exc}")
+        return False

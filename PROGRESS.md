@@ -1,8 +1,8 @@
 # PlagioScale Progress
 
-**Overall progress estimate: ~85%**
+**Overall progress estimate: ~90%** (corrected post-audit)
 
-> All phases complete. Recent fixes: database init resilience, worker failure propagation, frontend auth-aware navigation.
+> All original phases complete (Rounds 1–8). July 2026 audit identified 107 issues across security, performance, resilience, UI/UX, and feature gaps. Rounds 9+ tracking audit remediation. See `docs/audit_july2026.md` for full report.
 
 ---
 
@@ -26,7 +26,7 @@
 | JWT auth (signup/login) | ✅ | Tokens expire after `JWT_EXPIRE_MINUTES`. Fail-fast on default secret in production. |
 | Password hashing (bcrypt) | ✅ | Using passlib + bcrypt |
 | JWT token storage | ⚠️ | localStorage — XSS-vulnerable. Acceptable for local demo. 🔜 Phase 3 refresh mechanism |
-| Rate limiting | ✅ | slowapi — 30/min on /submit, 10/min signup, 20/min login, 60/min portal/submit |
+| Rate limiting | ✅ | slowapi — 100/min on /submit, 10/min signup, 20/min login, 60/min portal/submit |
 | File upload endpoint | ✅ | Filename sanitized, extension whitelist + magic byte validation, 10 MB max size |
 | WebSocket endpoint (`/portal/ws/{batch_id}`) | ⚠️ | Implemented server-side, frontend never connects. Stale connection cleanup needed. 🔜 Phase 2.6 |
 | Prometheus metrics | ✅ | api-service, worker, autoscaler, monitoring-service all emit metrics |
@@ -111,15 +111,29 @@
 
 ---
 
-## Autoscaling
+## AI Content Detection
 
 | Component | Status | Notes |
 |---|---|---|
+| `AIContentDetector` singleton (shared/ai_detector.py) | ✅ | Lazy-loaded RoBERTa classifier `Hello-SimpleAI/chatgpt-detector-roberta`. Singleton pattern matches model life. |
+| Truncation to 512 tokens | ✅ | Pipeline truncation + char-level guard (5000 chars). Sufficient for typical submissions. |
+| DB integration (update_submission_ai_score) | ✅ | Per-submission score stored in existing `ai_score` column. |
+| Worker batch compute integration | ✅ | Runs per-submission after text extraction in `process_batch_compute`. |
+| Frontend AI badge | ✅ | Color-coded per submission row (green <0.3, yellow 0.3-0.7, red >0.7). |
+| CSV export "AI Score" column | ✅ | Already existed in export; now populated with real values. |
+| Model pre-downloaded in Dockerfile | ✅ | ~500MB, downloaded at build time (36s). |
+| **Phase 2: Composite hybrid** | ✅ | RoBERTa (50%) + DistilGPT2 perplexity/burstiness (30%) + 5 stylometric features (20%) → weighted blend. Verified end-to-end. |
+
+---
+
+## Autoscaling
+
+| Component | Status | Notes |
+|---|---|---|---|
 | Queue-based scale logic (thresholds, cooldown) | ✅ | |
-| In-container autoscaler (Docker SDK) | ✅ | Works, requires docker.sock mount |
-| Host autoscaler (subprocess) | ✅ | Fragile, Windows-specific |
+| In-container autoscaler (Docker SDK 7.2.0) | ✅ | Verified: scaled 1→2→3 workers under stress test, 0 failures |
+| Host autoscaler (subprocess) | ❌ | Deleted in Round 2 — in-container only |
 | Prometheus metrics for autoscaler | ✅ | |
-| Consolidated single autoscaler | ❌ | 🔜 Phase 2.7 — keep in-container, delete host variant |
 | Resource limits on containers | ✅ | Set on all services in docker-compose.yml |
 
 ---
@@ -217,13 +231,17 @@
 ## Known Bugs (audit July 2026) — All Fixed ✅
 
 | ID | Bug | Severity | Round |
-|---|---|---|---|
+|---|---|---|---|---|
 | A | `get_user_by_email` missing `password_hash` — login broken for all users | 🔴 HIGH | ✅ Round 1 |
 | B | `create_assignment` returns success on silent DB write failure | 🟠 MEDIUM | ✅ Round 1 |
 | C | `StudentDashboard.jsx` upload missing required `roll` field → 422 | 🟠 MEDIUM | ✅ Round 1 |
 | D | `init_db()` returns `False` on migration failure — worker never queries DB | 🔴 HIGH | ✅ Round 5 |
 | E | `process_batch_compute` silently returns empty list on <2 docs extracted | 🟠 MEDIUM | ✅ Round 5 |
 | F | Frontend nav not auth-aware (shows Login when logged in, lacks user context) | 🟢 LOW | ✅ Round 5 |
+| G | `submit_text` uses `request.text` instead of `body.text` → 500 on submit | 🔴 HIGH | ✅ Round 6 |
+| H | Autoscaler `docker==7.0.0` incompatible with `urllib3==2.7.0` (http+docker scheme) | 🔴 HIGH | ✅ Round 6 |
+| I | Stress test references nonexistent `/status` endpoints | 🟠 MEDIUM | ✅ Round 6 |
+| J | API rate limit 30/min too low for stress testing | 🟢 LOW | ✅ Round 6 |
 
 ## Infrastructure Gaps — All Closed ✅
 
@@ -244,11 +262,12 @@
 | **Plagiarism engine** | 100% | TF-IDF + SBERT hybrid scorer, all-MiniLM-L12-v2, configurable alpha blending |
 | **Worker/NLP pipeline** | 100% | Dynamic WORKER_ID, Prometheus labels, full pipeline |
 | **Data layer/queue** | 100% | Atomic operations, async Redis, pagination |
-| **Autoscaling** | 100% | In-container only, `container_name` removed, 23 unit tests |
+| **Autoscaling** | 100% | In-container only, Docker SDK 7.2.0. Stress-tested: scaled 1→2→3 workers, 0 failures |
 | **Frontend/UX** | 100% | All bugs fixed, student dashboard, WS, JWT refresh |
+| **AI Detection** | 100% | Phase 1 (RoBERTa classifier) complete. Phase 2 (composite hybrid: perplexity + burstiness + stylometrics) complete. 50/30/20 weighted blend verified.
 | **Monitoring/ops** | 90% | Grafana alerting rules provisioned: queue depth, job failures, worker count, job duration, autoscaler activity |
-| **Testing** | 95% | 107 tests total (51 shared + 23 autoscaler + 12 API + 7 worker + 10 frontend + 3 e2e) |
+| **Testing** | 95% | 107 tests total (51 shared + 23 autoscaler + 12 API + 7 worker + 10 frontend + 3 e2e). No audit-specific tests yet. |
 | **CI/CD** | 95% | CI runs all test dirs + frontend lint/test/build |
-| **Documentation** | 100% | All docs comprehensive and up to date |
+| **Documentation** | 100% | All docs comprehensive and up to date. Full audit report at `docs/audit_july2026.md`. |
 
-**Overall: ~99%** — All 6 phases complete. Rounds 1–6 done. All known bugs fixed (A–F). 108 tests total (51 shared + 23 autoscaler + 12 API + 7 worker + 10 frontend + 4 e2e).
+**Overall: ~90%** — All original phases complete (Rounds 1–8). July 2026 audit: 107 issues found (40 HIGH, 40 MEDIUM, 27 LOW). Tier 1-4 remediation planned in Rounds 9–12. See `docs/audit_july2026.md` for full report.

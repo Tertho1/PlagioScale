@@ -75,9 +75,13 @@ Submit text/file → API validates → enqueue job in Redis
 | **Text extraction** | `shared/text_extraction.py` — lazy imports for PDF/DOCX/txt to avoid runtime deps in the API |
 | **Autoscaler** | In-container (Docker SDK) — host variant removed |
 | **JWT auth** | localStorage-based (XSS-vulnerable, acceptable for local demo). Auto-refresh with 5-min expiry margin |
-| **Rate limiting** | slowapi: `/submit` 30/min, `/auth/signup` 10/min, `/auth/login` 20/min, `/portal/submit` 60/min |
+| **Rate limiting** | slowapi + WS rate limit (10/min per IP) |
 | **File uploads** | Sanitised filenames, extension whitelist + magic-byte check, 10 MB limit |
-| **WebSocket** | Single API instance only — no Redis Pub/Sub for multi-replica yet. Stale connections cleaned every 30s |
+| **WebSocket** | Multi-replica via Redis Pub/Sub (`ws:progress` channel). Stale connections cleaned every 30s |
+| **Dark mode** | CSS variables + `[data-theme]` + localStorage persistence — toggle in navbar |
+| **mTLS** | Optional `USE_MTLS=true` — auto-generated certs in `certs/`, uvicorn SSL, worker client certs |
+| **Auth** | JWT (httpOnly cookies + CSRF primary, localStorage fallback). Session invalidation on role change via `token_version` |
+| **Non-root containers** | api-service, worker-service run as UID 1000 |
 
 ---
 
@@ -125,7 +129,8 @@ cd frontend && npx vitest run
 ruff check .
 ```
 
-All tests pass on Python 3.14 with mocked dependencies.
+All tests pass on Python 3.14 with mocked dependencies (108 total — 54 shared unit, 12 API, 7 worker, 35 legacy).
+
 
 ### Seed data
 
@@ -195,7 +200,17 @@ grafana/              Pre-provisioned dashboards
 | `/portal/compute/{batch_id}` | POST | Bearer | Trigger similarity computation |
 | `/portal/matrix/{batch_id}` | GET | Bearer | Get similarity matrix |
 | `/portal/export/{batch_id}` | GET | Bearer | Download CSV (roll, name, email, submission_id, filename, scores) |
-| `/ws` | — | — | WebSocket (progress updates) |
+| `/portal/report/{batch_id}/{sub_id_1}/{sub_id_2}` | GET | Bearer | Download PDF similarity report |
+| `/portal/cross-batch/{batch_id_1}/{batch_id_2}` | GET | Bearer | Compare submissions across two batches |
+| `/portal/student-comparison/{submission_id}` | GET | Bearer | All pairwise scores for one student |
+| `/portal/external-lookup/{submission_id}` | GET | Bearer | Simulated web/academic phrase search |
+| `/admin/stats` | GET | Admin | System-wide statistics |
+| `/admin/stats/export` | GET | Admin | Download stats as CSV |
+| `/admin/users` | GET | Admin | List users (search, paginated) |
+| `/admin/users/{id}/role` | POST | Admin | Change user role |
+| `/admin/notifications/send` | POST | Admin | Send pending email notifications |
+| `/admin/audit/tail` | GET | Admin | SSE stream of audit log entries |
+| `/ws` | — | — | WebSocket (progress updates, multi-replica via Redis Pub/Sub) |
 
 ---
 
@@ -204,6 +219,7 @@ grafana/              Pre-provisioned dashboards
 See `TODO.md` for per-task tracking and `AGENTS.md` for agent context.
 
 Key recent additions:
+- **Round 13** — Session invalidation on role change, WS rate limiting, CSV stats export, admin users search/pagination, non-root containers, dark mode, live audit log tail, compose health monitor, Grafana audit dashboard, multi-replica WebSocket (Redis Pub/Sub), optional mTLS, 54 new unit tests (108 total)
 - **Phase 4** — Collusion graph, blind review mode, CSV enhanced columns
 - **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 10 frontend tests, seed data script, stress test with autoscaling verification
 - **Round 5** — Database init resilience (worker no longer stuck if migration fails), batch compute failure propagation (clear error messages for failed extractions), auth-aware frontend navigation (Login/Sign up hidden when logged in, nav shows email, auth page redirects)

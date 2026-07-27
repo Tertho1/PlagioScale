@@ -96,6 +96,25 @@ def overview():
     }
 
 
+@app.get("/api/health-summary")
+def health_summary():
+    services = {}
+    try:
+        d = get_docker_client()
+        containers = d.containers.list(all=True, filters={"label": "com.docker.compose.project"})
+        for c in containers:
+            labels = c.labels or {}
+            service_name = labels.get("com.docker.compose.service", c.name)
+            services[service_name] = {
+                "name": service_name,
+                "status": c.status,
+                "health": c.attrs.get("State", {}).get("Health", {}).get("Status", "unknown"),
+            }
+    except Exception:
+        pass
+    return {"services": services}
+
+
 @app.get("/api/events")
 def events(limit: int = 20):
     rows = []
@@ -161,13 +180,14 @@ def dashboard():
   <body>
     <div class=\"wrap\">
       <h1>PlagioScale Live Dashboard</h1>
-      <div class=\"sub\">Queue depth, worker count, and autoscaler decisions in real time.</div>
+      <div class=\"sub\">Queue depth, worker count, and service health in real time.</div>
       <div class=\"grid\">
         <div class=\"card\"><div class=\"label\">Queue Length</div><div id=\"queue\" class=\"value\">0</div></div>
         <div class=\"card\"><div class=\"label\">Workers Running</div><div id=\"workers\" class=\"value\">0</div></div>
         <div class=\"card\"><div class=\"label\">Completed Jobs</div><div id=\"completed\" class=\"value\">0</div></div>
         <div class=\"card\"><div class=\"label\">Processing Jobs</div><div id=\"processing\" class=\"value\">0</div></div>
       </div>
+      <div class=\"health-grid\" id=\"healthGrid\" style=\"margin-top:16px;display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))\"></div>
       <div class=\"events\">
         <h2>Autoscaler Events</h2>
         <div id=\"eventsList\"></div>
@@ -186,19 +206,33 @@ def dashboard():
 
       async function refresh() {
         try {
-          const [overviewRes, eventsRes] = await Promise.all([
+          const [overviewRes, eventsRes, healthRes] = await Promise.all([
             fetch('/api/overview'),
-            fetch('/api/events?limit=25')
+            fetch('/api/events?limit=25'),
+            fetch('/api/health-summary')
           ]);
 
           const overview = await overviewRes.json();
           const events = await eventsRes.json();
+          const health = await healthRes.json();
 
           document.getElementById('queue').textContent = overview.queue_length;
           document.getElementById('workers').textContent = overview.workers;
           document.getElementById('completed').textContent = overview.jobs.completed;
           document.getElementById('processing').textContent = overview.jobs.processing;
           document.getElementById('ts').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+
+          const healthGrid = document.getElementById('healthGrid');
+          healthGrid.innerHTML = '';
+          const svcs = health.services || {};
+          Object.keys(svcs).sort().forEach((name) => {
+            const s = svcs[name];
+            const isUp = s.status === 'running' && (s.health === 'healthy' || s.health === 'unknown' || s.health === 'none');
+            const div = document.createElement('div');
+            div.style.cssText = 'background:var(--card);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.06)';
+            div.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + (isUp ? '#22c55e' : '#ef4444') + '"></span><span>' + name + '</span>';
+            healthGrid.appendChild(div);
+          });
 
           const list = document.getElementById('eventsList');
           list.innerHTML = '';

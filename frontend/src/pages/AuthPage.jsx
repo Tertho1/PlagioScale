@@ -28,6 +28,23 @@ export default function AuthPage() {
     setBusy(true);
     setStatus(mode === "login" ? "Signing in..." : "Creating account...");
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setStatus("Error: Please enter a valid email address");
+      setBusy(false);
+      return;
+    }
+    if (password.length < 6) {
+      setStatus("Error: Password must be at least 6 characters");
+      setBusy(false);
+      return;
+    }
+    if (mode === "signup" && !name.trim()) {
+      setStatus("Error: Name is required");
+      setBusy(false);
+      return;
+    }
+
     try {
       const endpoint = mode === "login" ? "/auth/login" : "/auth/signup";
       const payload = mode === "login"
@@ -37,6 +54,7 @@ export default function AuthPage() {
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
 
@@ -58,19 +76,6 @@ export default function AuthPage() {
 
   return (
     <div className="page-shell">
-      <div className="top-nav">
-        <Link to="/" className="brand-mark">
-          <span className="brand-badge">P</span>
-          <span className="brand-copy">
-            <strong>PlagioScale</strong>
-            <span>Account access</span>
-          </span>
-        </Link>
-        <div className="nav-links">
-          <Link to="/" className="nav-link">Home</Link>
-          <Link to="/dashboard" className="nav-link">Dashboard</Link>
-        </div>
-      </div>
 
       <section className="hero-card" style={{ marginBottom: 20 }}>
         <div className="eyebrow">Account access</div>

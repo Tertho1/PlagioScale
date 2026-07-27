@@ -46,10 +46,12 @@ def test_process_job_failure(mock_compare, mock_qc_init, mock_init_db):
     import worker
 
     w = worker.Worker()
+    # Make retry count >= MAX_RETRIES so the job goes to FAILED
+    w.queue_client.redis_client.hget.return_value = str(worker.MAX_RETRIES)
     job = Job(job_id="test-job-002", text="This is a test document that will fail.")
     result = w.process_job(job)
     assert result is False
-    w.queue_client.update_job_status.assert_any_call("test-job-002", JobStatus.FAILED)
+    w.queue_client.update_job_status.assert_any_call("test-job-002", worker.JobStatus.FAILED)
 
 
 @pytest.mark.integration
@@ -159,6 +161,8 @@ def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_re
     batch_id = "batch-001"
     payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
     job = Job(job_id="test-batch-fail-001", text=payload)
+    # Exhaust retries so it goes to FAILED
+    w.queue_client.redis_client.hget.return_value = str(worker.MAX_RETRIES)
     result = w.process_job(job)
     assert result is False
     mock_qc.update_job_status.assert_any_call("test-batch-fail-001", worker.JobStatus.FAILED)

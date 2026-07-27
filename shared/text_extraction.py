@@ -10,15 +10,18 @@ def extract_text(file_path: str) -> str:
                 return f.read()
         if suffix == ".pdf":
             from pypdf import PdfReader
-            reader = PdfReader(file_path)
-            parts = []
-            for page in reader.pages:
-                parts.append(page.extract_text() or "")
-            return "\n".join(parts)
+            with open(file_path, "rb") as fh:
+                reader = PdfReader(fh)
+                parts = []
+                for page in reader.pages:
+                    parts.append(page.extract_text() or "")
+                return "\n".join(parts)
         if suffix == ".docx":
             from docx import Document
             doc = Document(file_path)
-            return "\n".join(p.text for p in doc.paragraphs)
+            text = "\n".join(p.text for p in doc.paragraphs)
+            doc.close()
+            return text
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     except Exception as e:

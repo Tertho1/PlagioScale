@@ -1,10 +1,25 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import "../styles/portal.css";
 
 export default function CollusionGraph({ matrix, labels, onNodeClick }) {
   const graphRef = useRef();
+  const containerRef = useRef();
   const [hovered, setHovered] = useState(null);
+  const [dims, setDims] = useState({ width: 600, height: 400 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width } = entry.contentRect;
+        setDims({ width: Math.max(300, width), height: Math.max(250, width * 0.6) });
+      }
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
   const graphData = useMemo(() => {
     if (!matrix || !labels || labels.length === 0) {
@@ -67,7 +82,7 @@ export default function CollusionGraph({ matrix, labels, onNodeClick }) {
       <p className="section-copy">
         Nodes with similarity ≥ 0.5 are connected. Red edge intensity = similarity strength.
       </p>
-      <div className="collusion-graph-container">
+      <div className="collusion-graph-container" ref={containerRef}>
         <ForceGraph2D
           ref={graphRef}
           graphData={graphData}
@@ -80,8 +95,8 @@ export default function CollusionGraph({ matrix, labels, onNodeClick }) {
           linkDirectionalParticleWidth={2}
           onNodeClick={handleClick}
           onNodeHover={(node) => setHovered(node?.name || null)}
-          width={600}
-          height={400}
+          width={dims.width}
+          height={dims.height}
         />
       </div>
       {hovered && (

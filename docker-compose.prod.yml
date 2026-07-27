@@ -1,0 +1,22 @@
+# Production override — uses pre-built GHCR images instead of local builds.
+# Usage:
+#   IMAGE_OWNER=anomalyco IMAGE_TAG=latest \
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Overrides build: for custom services with pull-and-skip-build behavior.
+
+services:
+  api-service:
+    build: !reset null
+
+  frontend:
+    build: !reset null
+
+  worker:
+    build: !reset null
+
+  autoscaler:
+    build: !reset null
+
+  monitoring-service:
+    build: !reset null

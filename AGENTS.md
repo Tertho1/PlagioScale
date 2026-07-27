@@ -19,23 +19,61 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 |---|---|
 | Async Redis in API | Implemented — `AsyncQueueClient` in `shared/queue_client.py` (Phase 2) |
 | Autoscaler | In-container (Docker SDK) — host variant deleted (Round 2) |
-| JWT storage | localStorage (XSS-vulnerable — acceptable for local demo) |
+| JWT storage | httpOnly cookies + CSRF (primary). localStorage fallback for JS access. XSS-vulnerable localStorage path kept for local demo convenience. httpOnly cookie path provides real CSRF/XSS protection. (Round 12) |
 | WebSocket scaling | Single API instance only — no Redis Pub/Sub for multi-replica yet |
 | Resource limits | Set on all services in docker-compose.yml (Phase 0) |
 | Similarity engine | Hybrid `HybridSimilarityScorer` — TF-IDF (lexical) + SBERT `all-MiniLM-L12-v2` (semantic), blended via configurable alpha (default 0.5) |
+| AI detection (Phase 1) | `AIContentDetector` in `shared/ai_detector.py` — `Hello-SimpleAI/chatgpt-detector-roberta` RoBERTa classifier, singleton, returns ai_score [0,1] |
+| AI detection (Phase 2) | Composite hybrid: RoBERTa classifier (primary, 50%) + DistilGPT2 perplexity/burstiness (secondary, 30%) + 5 stylometric features (tertiary, 20%), weighted blend → final ai_score |
+| Email notifications | `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD` env vars; `shared/email_notifier.py` with `send_email()`/`notify_completion()`; pending queue in `notifications` DB table |
+| PDF reports | `shared/pdf_report.py` via reportlab (preferred) or fpdf2 fallback; generated on-demand at `/portal/report/{batch_id}/{sub_id_1}/{sub_id_2}` |
+| External lookup | `shared/external_lookup.py` — phrase extraction + simulated web/academic search with in-memory cache |
+| OCR | `shared/ocr_processor.py` — pytesseract + pdf2image for scanned PDFs and images |
+| Admin panel | `/admin/stats`, `/admin/users`, `/admin/users/{id}/role`, `/admin/notifications/send` — all protected by `require_role("admin")` |
+| Cross-batch | `/portal/cross-batch/{batch_id_1}/{batch_id_2}` — compares active submissions across two batches |
+| Student comparison | `/portal/student-comparison/{submission_id}` — returns all pairwise scores for a student's submission |
+| DB migrations | Alembic configured in `alembic/` directory (`alembic.ini`, `env.py`, `script.py.mako`) |
+| Audit logging | `shared/audit_log.py` writes structured JSON to `/app/logs/audit.log` |
+| Session invalidation | `token_version` column on User — JWT `ver` claim checked on every request; incremented on role change → forces re-login (Round 13) |
+| Non-root containers | api-service, worker-service run as UID 1000 (`app` user). Frontend nginx runs as root (required for port 80). Autoscaler/monitoring-service stay root (need Docker socket). (Round 13) |
+| WS rate limiting | 10 WebSocket connections per IP per 60s window (`_check_ws_rate`) (Round 13) |
+| Admin users pagination | `/admin/users?search=&page=&per_page=` with search by email/name, 20 per page (Round 13) |
+| Admin stats CSV | `/admin/stats/export` — downloads system statistics as CSV (Round 13) |
+| Live audit log | SSE endpoint at `/admin/audit/tail` + Audit tab in admin panel (Round 13) |
+| WebSocket scaling | Redis Pub/Sub `ws:progress` channel — all replicas receive progress events (Round 13) |
+| Compose health | `/api/health-summary` endpoint + health grid in monitoring dashboard (Round 13) |
+| mTLS | Optional `USE_MTLS=true` — auto-generated certs in `certs/`, uvicorn SSL, worker client certs (Round 13) |
+| Dark mode | CSS variables swap with `[data-theme]` + localStorage persistence — toggle in navbar (Round 13) |
+| More unit tests | 108 tests total (+54) covering all 7 previously-untested shared modules (Round 13) |
+| Periodic DB reconnection | `_monitor_db()` background task retries `init_db()` every 30s when `db_ready` is False (Self-Healing) |
+| Dependency-aware /health | `/health` pings Redis + DB and returns `degraded` status if either is down (Self-Healing) |
+| Periodic stale-job recovery | `_recover_stale_jobs()` runs every 60s in worker main loop (Self-Healing) |
+| Failed job retry | Jobs re-enqueued up to `MAX_RETRIES` (3) with backoff via `STALE_RETRY_KEY` before dead letter (Self-Healing) |
+| Dead-letter consumer | `_drain_dead_letter()` runs every 60s — re-queues jobs under max retries, logs exhausted ones (Self-Healing) |
+| Alertmanager webhook | `prometheus/alertmanager.yml` + `prometheus/alerts.yml` + `/api/webhooks/alertmanager` endpoint with auto-remediation counters (Self-Healing) |
+| CI/CD | Build-and-push to GHCR on push to `main` — 5 images built via matrix (api, worker, autoscaler, monitoring, frontend), tagged with commit SHA + `latest`, pushed to `ghcr.io/{owner}/plagioscale-{service}`. Deploy via `IMAGE_OWNER=x IMAGE_TAG=latest bash scripts/deploy.sh`. `docker-compose.yml` has `image:` alongside `build:` — set env vars to pull pre-built images. (Round 14) |
 
-## Known Bugs (audit July 2026)
+## Known Bugs (audit July 2026) — All Fixed ✅
 
-| ID | Bug | Severity | Round |
-|---|---|---|---|
-| A | `get_user_by_email` missing `password_hash` — login broken for all users | 🔴 HIGH | Round 1 |
-| B | `create_assignment` returns success on silent DB write failure | 🟠 MEDIUM | Round 1 |
-| C | `StudentDashboard.jsx` upload missing required `roll` field → 422 | 🟠 MEDIUM | Round 1 |
-| D | `init_db()` returns `False` on migration failure → worker never queries DB | 🔴 HIGH | Round 5 |
-| E | `process_batch_compute` silently returns empty list on <2 docs extracted | 🟠 MEDIUM | Round 5 |
-| F | Frontend nav not auth-aware (shows Login when logged in, lacks user context) | 🟢 LOW | Round 5 |
+| ID | Bug | Severity | Round | Status |
+|---|---|---|---|---|
+| A | `get_user_by_email` missing `password_hash` — login broken for all users | 🔴 HIGH | Round 1 | ✅ Fixed |
+| B | `create_assignment` returns success on silent DB write failure | 🟠 MEDIUM | Round 1 | ✅ Fixed |
+| C | `StudentDashboard.jsx` upload missing required `roll` field → 422 | 🟠 MEDIUM | Round 1 | ✅ Fixed |
+| D | `init_db()` returns `False` on migration failure → worker never queries DB | 🔴 HIGH | Round 5 | ✅ Fixed |
+| E | `process_batch_compute` silently returns empty list on <2 docs extracted | 🟠 MEDIUM | Round 5 | ✅ Fixed |
+| F | Frontend nav not auth-aware (shows Login when logged in, lacks user context) | 🟢 LOW | Round 5 | ✅ Fixed |
+| G | `submit_text` uses `request.text` instead of `body.text` → 500 on submit | 🔴 HIGH | Round 6 | ✅ Fixed |
+| H | Autoscaler `docker==7.0.0` incompatible with `urllib3==2.7.0` (http+docker scheme) | 🔴 HIGH | Round 6 | ✅ Fixed |
+| I | Stress test references nonexistent `/status` endpoints (autoscaler uses Prometheus, worker port not exposed) | 🟠 MEDIUM | Round 6 | ✅ Fixed |
+| J | API rate limit 30/min too low for stress testing | 🟢 LOW | Round 6 | ✅ Fixed |
+
+## Work Rules
+
+- **Never push to GitHub unless explicitly asked.** All work is local unless I say otherwise.
 
 See `TODO.md` for full round-by-round fix plan.
+See `docs/audit_july2026.md` for comprehensive audit report.
 
 ## Folder Structure
 
@@ -46,11 +84,14 @@ autoscaler/          # In-container autoscaler (port 8002)
 monitoring-service/  # Live monitoring dashboard (port 8090)
 shared/              # Python modules shared across all services
 frontend/            # React + Vite + Nginx (port 3050)
-scripts/             # Utility scripts (stress test, seed data, pg_backup)
-infrastructure/      # Legacy scripts (marked for deletion in Round 2)
+scripts/             # Utility scripts (stress test, seed data, pg_backup, deploy)
 docs/                # Planning docs + archived reports
-prometheus/          # Prometheus scrape config
+prometheus/          # Prometheus scrape config + alerts + alertmanager config
 grafana/             # Pre-provisioned dashboards
+.github/workflows/   # GitHub Actions CI + CD
 ```
 
+## Status
+
+All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
 

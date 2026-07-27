@@ -17,9 +17,6 @@ _shared_db.SimilarityMatrix = mock.MagicMock()
 
 sys.modules['shared.database'] = _shared_db
 
-os.environ["DB_HOST"] = "nonexistent"
-os.environ["REDIS_HOST"] = "nonexistent"
-
 _api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _api_dir not in sys.path:
     sys.path.insert(0, _api_dir)
