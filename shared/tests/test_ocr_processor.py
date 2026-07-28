@@ -1,7 +1,8 @@
 """Tests for OCR processor module."""
-import tempfile
 import os
-from unittest.mock import patch, MagicMock
+import tempfile
+from unittest.mock import MagicMock, patch
+
 from shared.ocr_processor import is_ocr_needed, ocr_file
 
 

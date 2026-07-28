@@ -1,7 +1,8 @@
 """Tests for email notification module."""
 import os
-from unittest.mock import patch, MagicMock
-from shared.email_notifier import send_email, notify_completion, notify_assignment_open
+from unittest.mock import patch
+
+from shared.email_notifier import notify_assignment_open, notify_completion, send_email
 
 
 def test_send_email_no_smtp_config():

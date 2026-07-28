@@ -1,7 +1,8 @@
 """Tests for text extraction from common document formats."""
-import tempfile
 import os
-from unittest.mock import patch, MagicMock
+import tempfile
+from unittest.mock import MagicMock, patch
+
 from shared.text_extraction import extract_text
 
 

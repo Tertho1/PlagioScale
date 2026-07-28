@@ -2,8 +2,6 @@ const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 const USER_KEY = "plagioscale_user_email";
 const TOKEN_KEY = "plagioscale_access_token";
 let refreshPromise = null;
-let cachedMe = null;
-
 function getCookie(name) {
   const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
   return match ? decodeURIComponent(match[1]) : "";
@@ -45,7 +43,6 @@ export function setToken(token, email = "") {
     localStorage.setItem(USER_KEY, email);
   }
   refreshPromise = null;
-  cachedMe = null;
 }
 
 export function clearToken() {
@@ -54,7 +51,6 @@ export function clearToken() {
   deleteCookie("access_token");
   deleteCookie("csrf_token");
   refreshPromise = null;
-  cachedMe = null;
   fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
 }
 
@@ -63,7 +59,6 @@ export async function fetchMe() {
     const res = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
     if (!res.ok) return null;
     const data = await res.json();
-    cachedMe = data;
     return data;
   } catch {
     return null;

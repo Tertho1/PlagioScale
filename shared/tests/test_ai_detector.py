@@ -1,5 +1,6 @@
 """Tests for AI content detection module."""
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
+
 from shared.ai_detector import AIContentDetector
 
 

@@ -1,7 +1,8 @@
 """Tests for PDF report generation module."""
-from unittest.mock import patch, MagicMock
-from shared.pdf_report import _highlight_diff_words, generate_similarity_report_pdf
+from unittest.mock import MagicMock, patch
+
 import shared.pdf_report
+from shared.pdf_report import _highlight_diff_words, generate_similarity_report_pdf
 
 
 def test_highlight_diff_words():

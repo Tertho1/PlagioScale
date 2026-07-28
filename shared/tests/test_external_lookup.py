@@ -1,11 +1,9 @@
 """Tests for external lookup module."""
-import time
-from unittest.mock import patch
 from shared.external_lookup import (
-    _extract_key_phrases,
-    _cache_key,
-    search_external_sources,
     _SEARCH_CACHE,
+    _cache_key,
+    _extract_key_phrases,
+    search_external_sources,
 )
 
 

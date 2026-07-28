@@ -5,6 +5,12 @@ module.exports = {
     browser: true,
     es2022: true,
   },
+  overrides: [
+    {
+      files: ["src/tests/**", "**/*.test.*"],
+      env: { jest: true, node: true },
+    },
+  ],
   extends: [
     "eslint:recommended",
     "plugin:react/recommended",
