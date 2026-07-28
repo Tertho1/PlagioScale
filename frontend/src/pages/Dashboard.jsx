@@ -60,6 +60,7 @@ export default function Dashboard() {
   const [selectedId, setSelectedId] = useState(searchParams.get("batch") || "");
   const [selected, setSelected] = useState(null);
   const [matrix, setMatrix] = useState(null);
+  const [matrixIds, setMatrixIds] = useState([]);
   const [labels, setLabels] = useState([]);
   const [submissions, setSubmissions] = useState([]);
   const [creating, setCreating] = useState(false);
@@ -143,6 +144,7 @@ export default function Dashboard() {
         const mjson = await mres.json();
         const matrixObj = mjson.matrix || {};
         const ids = Object.keys(matrixObj);
+        setMatrixIds(ids);
         setMatrix(ids.length ? ids.map((i) => ids.map((j) => matrixObj[i][j] || 0)) : null);
 
         const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}?limit=500&offset=0`, { headers: await getAuthHeaders(), credentials: "include" });
@@ -150,12 +152,7 @@ export default function Dashboard() {
         if (sfetch.ok) {
           const sjson = await sfetch.json();
           (sjson.submissions || []).forEach((submission) => {
-            const parts = [submission.roll];
-            if (submission.name) parts.push(submission.name);
-            if (submission.email) parts.push(submission.email);
-            const fn = submission.filename ? submission.filename.split("_").slice(3).join("_") : null;
-            if (fn) parts.push(fn);
-            labelsMap[submission.submission_id] = parts.filter(Boolean).join(" · ") || submission.submission_id;
+            labelsMap[submission.submission_id] = submission.roll || submission.submission_id;
           });
         }
         setLabels(ids.map((id) => labelsMap[id] || id));
@@ -298,6 +295,7 @@ export default function Dashboard() {
       setSelected(null);
       setSubmissions([]);
       setMatrix(null);
+      setMatrixIds([]);
       setLabels([]);
       await loadAssignments();
     } catch (e) {
@@ -307,9 +305,9 @@ export default function Dashboard() {
   }
 
   const handleCellClick = useCallback(async (rowIdx, colIdx, cellValue) => {
-    const ids = Object.keys(Object.fromEntries(submissions.map(s => [s.submission_id, s])));
-    const leftId = ids[rowIdx];
-    const rightId = ids[colIdx];
+    const leftId = matrixIds?.[rowIdx];
+    const rightId = matrixIds?.[colIdx];
+    if (!leftId || !rightId) return;
     const leftLabel = displayLabels[rowIdx];
     const rightLabel = displayLabels[colIdx];
 
@@ -356,7 +354,7 @@ export default function Dashboard() {
       },
       similarity: cellValue,
     });
-  }, [submissions, labels, selectedId]);
+  }, [matrixIds, labels, selectedId]);
 
   useEffect(() => {
     if (!token) {
