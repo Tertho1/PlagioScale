@@ -768,9 +768,37 @@ async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_
     }
 
 
-async def broadcast_progress(batch_id: str):
+@app.put("/portal/assignments/{batch_id}")
+async def rename_assignment(batch_id: str, body: dict, current_user: dict = Depends(get_current_user)):
+    """Rename an assignment."""
+    name = body.get("name")
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    ok = await run_db(update_assignment, batch_id, name=name.strip())
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to rename assignment")
+    audit("assignment.rename", actor=current_user.get("user_id"), resource=batch_id, detail=name.strip())
+    return {"success": True, "batch_id": batch_id, "name": name.strip()}
+
+
+@app.delete("/portal/assignments/{batch_id}")
+async def delete_assignment_endpoint(batch_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete an assignment and its submissions."""
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    ok = await run_db(delete_assignment, batch_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to delete assignment")
+    audit("assignment.delete", actor=current_user.get("user_id"), resource=batch_id)
+    return {"success": True, "batch_id": batch_id}
+
+
+async def broadcast_progress(batch_id: str, done: bool = False):
     """Send progress updates to all connected websockets for a batch."""
-    # fetch authoritative values from DB
     total = 0
     processed = 0
     try:
@@ -787,6 +815,8 @@ async def broadcast_progress(batch_id: str):
         logging.warning("Failed to get submissions for batch %s", batch_id)
         processed = 0
     payload = {"processed": processed, "total": total}
+    if done:
+        payload["done"] = True
     # Publish to Redis so all replicas receive the update
     if _ws_redis is not None:
         try:
@@ -819,12 +849,10 @@ async def portal_notify(request: Request):
     try:
         payload = await request.json()
         batch_id = payload.get("batch_id")
-        # sanity
         if not batch_id:
             raise HTTPException(status_code=400, detail="batch_id required")
-        # use DB to sanity-check counts if needed
-        # broadcast to connected sockets
-        await broadcast_progress(batch_id)
+        done = payload.get("done", False)
+        await broadcast_progress(batch_id, done=done)
         return {"ok": True}
     except HTTPException:
         raise
@@ -947,19 +975,6 @@ async def portal_submit(
         except Exception:
             logging.exception("Failed to persist submission %s", submission_hash)
 
-    job = Job(job_id=submission_hash, text=dest)
-    queued = await queue_client.enqueue_job(job)
-    if db_ready:
-        try:
-            await run_db(
-                create_job_record,
-                job_id=submission_hash,
-                text=dest,
-                status=JobStatus.PENDING.value,
-            )
-        except Exception:
-            logging.exception("Failed to create job record %s", submission_hash)
-
     try:
         await broadcast_progress(batch_id)
     except Exception:
@@ -967,29 +982,42 @@ async def portal_submit(
 
     audit("submission.create", actor=user_id or "anonymous", resource=submission_hash, detail={"batch_id": batch_id, "roll": roll})
 
-    # Auto-trigger batch compute if enough submissions (skip if one is already queued/running)
+    queued = False
+    # Auto-trigger parallel AI detection + similarity compute if enough submissions
     try:
         from shared.database import get_submissions_count_by_batch, get_active_batch_compute_for_batch
         count = await run_db(get_submissions_count_by_batch, batch_id) if db_ready else 0
         if count >= 2 and db_ready:
             existing = await run_db(get_active_batch_compute_for_batch, batch_id)
             if existing:
-                logging.info("Auto-compute skipped for %s — already %s", batch_id, existing)
-                return {"submission_hash": submission_hash, "queued": bool(queued)}
-            auto_job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
-            auto_payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
-            auto_job = Job(job_id=auto_job_id, text=auto_payload)
-            await queue_client.enqueue_job(auto_job)
+                logging.info("Auto-jobs skipped for %s — already %s", batch_id, existing)
+                return {"submission_hash": submission_hash, "queued": queued}
+            # Enqueue AI detection job
+            ai_job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
+            ai_payload = json.dumps({"type": "AI_DETECTION", "batch_id": batch_id})
+            ai_job = Job(job_id=ai_job_id, text=ai_payload)
+            await queue_client.enqueue_job(ai_job)
             if db_ready:
                 try:
-                    await run_db(create_job_record, job_id=auto_job_id, text=auto_payload, status=JobStatus.PENDING.value)
+                    await run_db(create_job_record, job_id=ai_job_id, text=ai_payload, status=JobStatus.PENDING.value)
                 except Exception:
-                    logging.warning("Failed to create job record for auto-batch-compute %s", auto_job_id)
-            logging.info("Auto-triggered batch compute for %s (%d submissions)", batch_id, count)
+                    logging.warning("Failed to create job record for AI detection %s", ai_job_id)
+            # Enqueue similarity compute job
+            sim_job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
+            sim_payload = json.dumps({"type": "SIMILARITY_COMPUTE", "batch_id": batch_id})
+            sim_job = Job(job_id=sim_job_id, text=sim_payload)
+            await queue_client.enqueue_job(sim_job)
+            if db_ready:
+                try:
+                    await run_db(create_job_record, job_id=sim_job_id, text=sim_payload, status=JobStatus.PENDING.value)
+                except Exception:
+                    logging.warning("Failed to create job record for similarity compute %s", sim_job_id)
+            queued = True
+            logging.info("Auto-triggered AI detection + similarity compute for %s (%d submissions)", batch_id, count)
     except Exception:
-        logging.exception("Failed to auto-trigger batch compute for %s", batch_id)
+        logging.exception("Failed to auto-trigger jobs for %s", batch_id)
 
-    return {"submission_hash": submission_hash, "queued": bool(queued)}
+    return {"submission_hash": submission_hash, "queued": queued}
 
 
 @app.post("/portal/submissions/{submission_id}/cancel")

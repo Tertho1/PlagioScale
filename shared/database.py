@@ -6,7 +6,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
@@ -481,6 +481,7 @@ def get_submissions_by_batch(batch_id: str, limit: int = None, offset: int = 0) 
                     "roll": r.roll,
                     "name": r.name,
                     "email": r.email,
+                    "filename": r.filename,
                     "file_path": r.file_path,
                     "status": r.status,
                     "plagiarism_score": r.plagiarism_score,
@@ -545,6 +546,44 @@ def get_assignment(batch_id: str) -> Optional[dict]:
     except Exception as exc:
         print(f"⚠ Failed reading assignment {batch_id}: {exc}")
         return None
+
+
+def update_assignment(batch_id: str, name: str = None, expected_count: int = None) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(Assignment, batch_id)
+            if not record:
+                return False
+            if name is not None:
+                record.name = name
+            if expected_count is not None:
+                record.expected_count = expected_count
+            return True
+    except Exception as exc:
+        print(f"⚠ Failed updating assignment {batch_id}: {exc}")
+        return False
+
+
+def delete_assignment(batch_id: str) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(Assignment, batch_id)
+            if not record:
+                return False
+            # Cancel all active submissions for this batch
+            session.query(Submission).filter(
+                Submission.batch_id == batch_id,
+                Submission.status == "ACTIVE",
+            ).update({"status": "CANCELLED"})
+            # Delete similarity results
+            session.query(SimilarityResult).filter(
+                SimilarityResult.batch_id == batch_id,
+            ).delete()
+            session.delete(record)
+            return True
+    except Exception as exc:
+        print(f"⚠ Failed deleting assignment {batch_id}: {exc}")
+        return False
 
 
 def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
@@ -642,15 +681,18 @@ def get_submissions_count_by_batch(batch_id: str) -> int:
 
 
 def get_active_batch_compute_for_batch(batch_id: str) -> Optional[str]:
-    """Check if a batch compute job for this batch is already PENDING or PROCESSING."""
+    """Check if a batch compute job for this batch is already PENDING or PROCESSING
+    and was created recently (< 5 min ago) — stale jobs are ignored."""
     try:
         prefix = f"batch-{batch_id}-"
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
         with get_session() as session:
             existing = (
                 session.query(JobRecord)
                 .filter(
                     JobRecord.job_id.like(f"{prefix}%"),
                     JobRecord.status.in_(["PENDING", "PROCESSING"]),
+                    JobRecord.updated_at >= cutoff,
                 )
                 .first()
             )
@@ -703,7 +745,7 @@ def store_submission_embedding(submission_id: str, embedding: list) -> bool:
 
 
 def store_similarity_results(batch_id: str, results: dict) -> bool:
-    """Store pairwise similarity results."""
+    """Store pairwise similarity results and update per-submission plagiarism scores."""
     try:
         with get_session() as session:
             # Clear existing results for this batch
@@ -722,6 +764,22 @@ def store_similarity_results(batch_id: str, results: dict) -> bool:
                                 similarity_score=score,
                             )
                         )
+            # Update per-submission plagiarism_score as max similarity
+            max_scores: dict[str, float] = {}
+            for sub_id_1, scores in results.items():
+                for sub_id_2, score in scores.items():
+                    if sub_id_1 == sub_id_2:
+                        continue
+                    c1 = max_scores.get(sub_id_1, 0.0)
+                    if score > c1:
+                        max_scores[sub_id_1] = score
+                    c2 = max_scores.get(sub_id_2, 0.0)
+                    if score > c2:
+                        max_scores[sub_id_2] = score
+            for sub_id, plag_score in max_scores.items():
+                sub = session.query(Submission).filter(Submission.submission_id == sub_id).first()
+                if sub:
+                    sub.plagiarism_score = plag_score
         return True
     except Exception as exc:
         print(f"⚠ Failed storing similarity results for batch {batch_id}: {exc}")
@@ -943,11 +1001,13 @@ def get_student_comparison_details(submission_id: str) -> list:
                         "submission_id": submission_id,
                         "roll": sub.roll,
                         "name": sub.name,
+                        "filename": sub.filename,
                         "ai_score": sub.ai_score,
                         "plagiarism_score": sub.plagiarism_score,
                         "compared_with_id": other_id,
                         "compared_with_roll": other.roll if other else "?",
                         "compared_with_name": other.name if other else "?",
+                        "compared_with_filename": other.filename if other else "?",
                         "similarity_score": r.similarity_score,
                     }
                 )

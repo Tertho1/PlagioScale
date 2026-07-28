@@ -165,6 +165,7 @@ export default function StudentDashboard() {
                 <table className="matrix-table" style={{ width: '100%', fontSize: 13 }}>
                   <thead>
                     <tr>
+                      <th>Roll</th>
                       <th>File</th>
                       <th>Status</th>
                       <th>Score</th>
@@ -175,7 +176,8 @@ export default function StudentDashboard() {
                   <tbody>
                     {b.submissions.map(s => (
                       <tr key={s.submission_id}>
-                        <td>{s.filename || s.file_path?.split('/').pop() || '-'}</td>
+                        <td>{s.roll || "—"}</td>
+                        <td>{s.filename ? s.filename.split("_").slice(3).join("_") : (s.file_path?.split('/').pop() || '-')}</td>
                         <td>
                           <span className={`badge badge-${s.status === 'COMPLETED' ? 'success' : 'pending'}`}>
                             {s.status}

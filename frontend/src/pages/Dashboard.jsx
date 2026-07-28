@@ -65,6 +65,10 @@ export default function Dashboard() {
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [computing, setComputing] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const [viewer, setViewer] = useState({ open: false, left: null, right: null, similarity: 0 });
   const [blindReview, setBlindReview] = useState(false);
 
@@ -90,7 +94,7 @@ export default function Dashboard() {
       loadAssignmentDetails(selectedId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsProgress.processed, wsProgress.total]);
+  }, [wsProgress.processed, wsProgress.total, wsProgress.done]);
 
   async function loadAssignments() {
     if (!token) return;
@@ -149,6 +153,8 @@ export default function Dashboard() {
             const parts = [submission.roll];
             if (submission.name) parts.push(submission.name);
             if (submission.email) parts.push(submission.email);
+            const fn = submission.filename ? submission.filename.split("_").slice(3).join("_") : null;
+            if (fn) parts.push(fn);
             labelsMap[submission.submission_id] = parts.filter(Boolean).join(" · ") || submission.submission_id;
           });
         }
@@ -246,6 +252,57 @@ export default function Dashboard() {
       setError(e?.message || "Compute failed");
     } finally {
       setComputing(false);
+    }
+  }
+
+  async function handleRename() {
+    if (!selectedId || !renameValue.trim()) return;
+    setRenaming(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
+        credentials: "include",
+        body: JSON.stringify({ name: renameValue.trim() }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Failed to rename");
+      }
+      setRenaming(false);
+      setSelected((s) => (s ? { ...s, name: renameValue.trim() } : s));
+    } catch (e) {
+      setError(e.message);
+      setRenaming(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!selectedId || confirmDelete !== selected?.name) return;
+    setDeleting(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
+        method: "DELETE",
+        headers: await getAuthHeaders(),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Failed to delete");
+      }
+      setConfirmDelete("");
+      setDeleting(false);
+      setSelectedId("");
+      setSelected(null);
+      setSubmissions([]);
+      setMatrix(null);
+      setLabels([]);
+      await loadAssignments();
+    } catch (e) {
+      setError(e.message);
+      setDeleting(false);
     }
   }
 
@@ -420,7 +477,22 @@ export default function Dashboard() {
           <div className="detail-header">
             <div>
               <div className="section-label">Assignment detail</div>
-              <h2 className="section-title">{selected?.name || "Select an assignment"}</h2>
+              {renaming ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") { setRenaming(false); setRenameValue(""); } }}
+                    className="input"
+                    style={{ fontSize: 20, fontWeight: 700, padding: "4px 8px" }}
+                    autoFocus
+                  />
+                  <button className="button-sm button" onClick={handleRename} disabled={renaming}>Save</button>
+                  <button className="button-sm button-secondary" onClick={() => { setRenaming(false); setRenameValue(""); }}>Cancel</button>
+                </div>
+              ) : (
+                <h2 className="section-title">{selected?.name || "Select an assignment"}</h2>
+              )}
               <p className="section-copy">
                 {selected ? `${submissions.length} submissions · ${selected.batch_id}` : "Open an assignment to see submissions, similarity, and summary details."}
               </p>
@@ -433,8 +505,42 @@ export default function Dashboard() {
               <button className="button" type="button" onClick={computeSimilarity} disabled={!selectedId || computing}>
                 {computing ? "Computing..." : "Compute similarity"}
               </button>
+              {selected && (
+                <>
+                  <button className="button-secondary" type="button" onClick={() => { setRenameValue(selected.name); setRenaming(true); }}>
+                    Rename
+                  </button>
+                  <button className="button-secondary" type="button" onClick={() => setConfirmDelete(selected.name)} style={{ color: "#dc2626" }}>
+                    Delete
+                  </button>
+                </>
+              )}
             </div>
           </div>
+
+          {confirmDelete && selected && (
+            <div className="modal-overlay" onClick={() => setConfirmDelete("")} role="dialog" aria-modal="true">
+              <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+                <h3 style={{ margin: "0 0 8px" }}>Delete assignment?</h3>
+                <p style={{ margin: "0 0 16px", color: "#64748b" }}>
+                  This will permanently delete "<strong>{selected.name}</strong>" and all its submissions and similarity data. Type the assignment name to confirm.
+                </p>
+                <input
+                  value={confirmDelete}
+                  onChange={(e) => setConfirmDelete(e.target.value)}
+                  placeholder="Type assignment name to confirm"
+                  className="input"
+                  style={{ width: "100%", marginBottom: 12 }}
+                />
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button className="button-secondary" onClick={() => setConfirmDelete("")}>Cancel</button>
+                  <button className="button" onClick={handleDelete} disabled={confirmDelete !== selected.name || deleting} style={{ background: "#dc2626", color: "#fff" }}>
+                    {deleting ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {selected ? (
             <>
@@ -462,20 +568,22 @@ export default function Dashboard() {
                     const cls = aiScore > 0.7 ? 'ai-badge-red' : aiScore > 0.3 ? 'ai-badge-yellow' : 'ai-badge-green';
                     aiBadge = <span className={`ai-badge ${cls}`} title={`AI detection confidence: ${pct}%`}>AI {pct}%</span>;
                   }
-                  return (
-                    <div key={submission.submission_id} className="submission-row">
-                      <div>
-                        <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
-                        <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
-                        <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
+                    const fileName = submission.filename ? submission.filename.split("_").slice(3).join("_") : "—";
+                    return (
+                      <div key={submission.submission_id} className="submission-row">
+                        <div>
+                          <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
+                          <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
+                          <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
+                          <div className="small-copy" style={{ color: "#64748b", fontSize: 12 }}>{fileName}</div>
+                        </div>
+                        <div className="row-meta">
+                          {aiBadge}
+                          <span>{submission.status || "ACTIVE"}</span>
+                          <span className="mono">{submission.submission_id.slice(0, 8)}</span>
+                        </div>
                       </div>
-                      <div className="row-meta">
-                        {aiBadge}
-                        <span>{submission.status || "ACTIVE"}</span>
-                        <span className="mono">{submission.submission_id.slice(0, 8)}</span>
-                      </div>
-                    </div>
-                  );
+                    );
                 }) : <div className="empty-state">No submissions for this assignment yet.</div>}
               </div>
 

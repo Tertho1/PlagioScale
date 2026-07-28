@@ -6,7 +6,6 @@ import os
 import socket
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,10 +28,8 @@ from shared.database import (
     update_submission_ai_score,
 )
 from shared.models import Job, JobStatus
-from shared.plagiarism import PlagiarismDetector, compare_with_database
 from shared.queue_client import QueueClient
 from shared.similarity_scorer import HybridSimilarityScorer
-from shared.vectorizer import TextVectorizer
 
 STALE_JOB_TIMEOUT = 300
 MAX_RETRIES = 3
@@ -66,7 +63,6 @@ class Worker:
         """Initialize worker."""
         self.queue_client = QueueClient()
         self.db_ready = init_db()
-        self.detector = PlagiarismDetector(k=5)
         self.ai_detector = AIContentDetector()
         if self.ai_detector.available:
             print(f"[{WORKER_ID}] AI content detector loaded")
@@ -109,54 +105,21 @@ class Worker:
                 if job_record and job_record.get("status") == JobStatus.CANCELLED.value:
                     print(f"[{WORKER_ID}] Skipping cancelled job {job.job_id}")
                     return True
-            # detect special batch-compute jobs
             try:
                 payload = json.loads(job.text)
-                if isinstance(payload, dict) and payload.get('type') == 'BATCH_COMPUTE':
+                if isinstance(payload, dict):
+                    jt = payload.get('type')
                     batch_id = payload.get('batch_id')
-                    return self.process_batch_compute(job, batch_id)
+                    if jt == 'AI_DETECTION':
+                        return self.process_ai_detection(job, batch_id)
+                    if jt in ('BATCH_COMPUTE', 'SIMILARITY_COMPUTE'):
+                        return self.process_similarity(job, batch_id)
             except Exception:
-                # not a batch job, continue with normal processing
                 pass
-            job_start_time = time.time()
-
-            # Update status to PROCESSING
-            self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)
-            if self.db_ready:
-                update_job_status(job.job_id, JobStatus.PROCESSING.value, worker_id=WORKER_ID)
-
-            # Simulate processing time (can be reduced for testing)
-            time.sleep(1)
-
-            # Run plagiarism detection against database
-            comparison_results = compare_with_database(job.text, self.detector)
-
-            # Calculate overall plagiarism score
-            scores = [r['plagiarism_score'] for r in comparison_results]
-            max_score = max(scores) if scores else 0.0
-            avg_score = sum(scores) / len(scores) if scores else 0.0
-
-            result = {
-                'max_plagiarism_score': round(max_score, 4),
-                'avg_plagiarism_score': round(avg_score, 4),
-                'comparison_results': comparison_results,
-                'text_length': len(job.text),
-                'algorithm': 'k-shingle + cosine similarity'
-            }
-
-            # Store result in Redis
-            self.queue_client.store_result(job.job_id, result)
-            if self.db_ready:
-                store_job_result(job.job_id, result, worker_id=WORKER_ID)
-
-            # Save result to file as well (for durability)
-            self._save_to_file(job.job_id, result)
-
-            # Record metrics
-            job_duration = time.time() - job_start_time
-            JOB_DURATION.labels(WORKER_ID).observe(job_duration)
+            # Individual (single-submission) jobs are deprecated — skip them
+            print(f"[{WORKER_ID}] Skipping deprecated individual job {job.job_id}")
+            self.queue_client.store_result(job.job_id, {"skipped": True})
             JOBS_PROCESSED.labels(WORKER_ID).inc()
-            print(f"[{WORKER_ID}] ✓ Job {job.job_id} completed (score: {max_score:.4f})")
             return True
 
         except Exception as e:
@@ -176,78 +139,120 @@ class Worker:
             return False
 
 
-    def process_batch_compute(self, job: Job, batch_id: str) -> bool:
-        """Process a batch compute job: vectorize all submissions and store similarity matrix."""
+    def _notify(self, batch_id: str, processed: int, total: int, done: bool = False):
+        """Send progress notification to API service."""
+        api_host = os.getenv('API_HOST', 'api-service')
+        api_port = os.getenv('API_PORT', '8000')
+        use_mtls = os.getenv('USE_MTLS', '').lower() in ('true', '1')
+        protocol = 'https' if use_mtls else 'http'
+        notify_url = f'{protocol}://{api_host}:{api_port}/portal/notify'
+        mtls_verify = '/app/certs/ca.crt' if use_mtls else None
+        mtls_cert = ('/app/certs/worker.crt', '/app/certs/worker.key') if use_mtls else None
         try:
-            print(f"[{WORKER_ID}] Starting batch compute for {batch_id} (job {job.job_id})")
+            headers = {}
+            if WORKER_SECRET:
+                headers["X-Worker-Secret"] = WORKER_SECRET
+            payload = {'batch_id': batch_id, 'processed': processed, 'total': total}
+            if done:
+                payload['done'] = True
+            requests.post(notify_url, json=payload, headers=headers, timeout=2, verify=mtls_verify, cert=mtls_cert)
+        except Exception:
+            pass
+
+    def process_ai_detection(self, job: Job, batch_id: str) -> bool:
+        """Process AI detection for all submissions in a batch."""
+        try:
+            print(f"[{WORKER_ID}] Starting AI detection for {batch_id} (job {job.job_id})")
             job_start = time.time()
 
             if self.db_ready:
                 job_record = get_job_record(job.job_id)
                 if job_record and job_record.get("status") == JobStatus.CANCELLED.value:
-                    print(f"[{WORKER_ID}] Skipping cancelled batch job {job.job_id}")
+                    print(f"[{WORKER_ID}] Skipping cancelled AI job {job.job_id}")
                     return True
 
-            # Update status
             self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)
             if self.db_ready:
                 update_job_status(job.job_id, JobStatus.PROCESSING.value, worker_id=WORKER_ID)
 
-            # Fetch submissions
+            submissions = get_submissions_by_batch(batch_id) if self.db_ready else []
+            if not submissions:
+                raise RuntimeError('No submissions found for batch')
+
+            total = len(submissions)
+            for i, sub in enumerate(submissions):
+                sub_id = sub.get('submission_id', '')
+                try:
+                    text = self._extract_text(sub['file_path'])
+                    if self.ai_detector.available and text.strip():
+                        ai_score = self._run_ai_detection(sub_id, text)
+                        if ai_score >= 0 and self.db_ready:
+                            update_submission_ai_score(sub_id, ai_score)
+                            print(f"[{WORKER_ID}] AI score for {sub_id}: {ai_score:.4f}")
+                except Exception as e:
+                    print(f"[{WORKER_ID}] Warning: AI detection failed for {sub.get('file_path')}: {e}")
+                self._notify(batch_id, i + 1, total)
+
+            result = {'batch_id': batch_id, 'num_submissions': total, 'type': 'AI_DETECTION'}
+            self.queue_client.store_result(job.job_id, result)
+            if self.db_ready:
+                store_job_result(job.job_id, result, worker_id=WORKER_ID)
+            self._save_to_file(job.job_id, result)
+            JOBS_PROCESSED.labels(WORKER_ID).inc()
+            JOB_DURATION.labels(WORKER_ID).observe(time.time() - job_start)
+            print(f"[{WORKER_ID}] ✓ AI detection completed for {batch_id} (job {job.job_id})")
+            self.queue_client.update_job_status(job.job_id, JobStatus.COMPLETED)
+            if self.db_ready:
+                update_job_status(job.job_id, JobStatus.COMPLETED.value, worker_id=WORKER_ID)
+            self._notify(batch_id, total, total, done=True)
+            return True
+        except Exception as e:
+            print(f"[{WORKER_ID}] ✗ AI detection failed for {batch_id}: {e}")
+            retries = int(self.queue_client.redis_client.hget(STALE_RETRY_KEY, job.job_id) or 0)
+            if retries < MAX_RETRIES:
+                self.queue_client.redis_client.hincrby(STALE_RETRY_KEY, job.job_id, 1)
+                self.queue_client.enqueue_job(job)
+            else:
+                self.queue_client.redis_client.sadd(DEAD_LETTER_KEY, job.job_id)
+                self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
+                if self.db_ready:
+                    update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
+            JOBS_FAILED.labels(WORKER_ID).inc()
+            return False
+
+    def process_similarity(self, job: Job, batch_id: str) -> bool:
+        """Compute similarity matrix for all submissions in a batch."""
+        try:
+            print(f"[{WORKER_ID}] Starting similarity compute for {batch_id} (job {job.job_id})")
+            job_start = time.time()
+
+            if self.db_ready:
+                job_record = get_job_record(job.job_id)
+                if job_record and job_record.get("status") == JobStatus.CANCELLED.value:
+                    print(f"[{WORKER_ID}] Skipping cancelled similarity job {job.job_id}")
+                    return True
+
+            self.queue_client.update_job_status(job.job_id, JobStatus.PROCESSING)
+            if self.db_ready:
+                update_job_status(job.job_id, JobStatus.PROCESSING.value, worker_id=WORKER_ID)
+
             submissions = get_submissions_by_batch(batch_id) if self.db_ready else []
             if not submissions:
                 raise RuntimeError('No submissions found for batch')
 
             vec = HybridSimilarityScorer(alpha=0.5)
-            api_host = os.getenv('API_HOST', 'api-service')
-            api_port = os.getenv('API_PORT', '8000')
-            use_mtls = os.getenv('USE_MTLS', '').lower() in ('true', '1')
-            protocol = 'https' if use_mtls else 'http'
-            notify_url = f'{protocol}://{api_host}:{api_port}/portal/notify'
-            mtls_verify = '/app/certs/ca.crt' if use_mtls else None
-            mtls_cert = ('/app/certs/worker.crt', '/app/certs/worker.key') if use_mtls else None
-            processed = 0
             total = len(submissions)
             failed_files = []
-            ai_tasks = []
-            for sub in submissions:
+            for i, sub in enumerate(submissions):
                 sub_id = sub.get('submission_id', '')
                 try:
                     text = self._extract_text(sub['file_path'])
                     if not vec.add_document(sub_id, text):
                         print(f"[{WORKER_ID}] Warning: extracted text too short for {sub.get('file_path')}")
-                    if self.ai_detector.available and text.strip():
-                        ai_tasks.append((sub_id, text))
                 except Exception as e:
                     print(f"[{WORKER_ID}] Warning: failed reading {sub.get('file_path')}: {e}")
                     failed_files.append(sub.get('file_path', 'unknown'))
-                processed += 1
-                try:
-                    headers = {}
-                    if WORKER_SECRET:
-                        headers["X-Worker-Secret"] = WORKER_SECRET
-                    requests.post(notify_url, json={'batch_id': batch_id, 'processed': processed, 'total': total}, headers=headers, timeout=2, verify=mtls_verify, cert=mtls_cert)
-                except Exception:
-                    pass
-
-            if ai_tasks:
-                try:
-                    with ThreadPoolExecutor(max_workers=2) as pool:
-                        fut_map = {}
-                        for sub_id, text in ai_tasks:
-                            fut = pool.submit(self._run_ai_detection, sub_id, text)
-                            fut_map[fut] = sub_id
-                        for fut in as_completed(fut_map, timeout=600):
-                            sub_id = fut_map[fut]
-                            try:
-                                ai_score = fut.result(timeout=300)
-                                if ai_score >= 0 and self.db_ready:
-                                    update_submission_ai_score(sub_id, ai_score)
-                                    print(f"[{WORKER_ID}] AI score for {sub_id}: {ai_score:.4f}")
-                            except Exception as e:
-                                print(f"[{WORKER_ID}] AI detection failed for {sub_id}: {e}")
-                except TimeoutError:
-                    print(f"[{WORKER_ID}] AI detection batch timed out (>600s), continuing without AI scores")
+                self._notify(batch_id, i + 1, total)
 
             if len(vec.doc_ids) < 2:
                 error_msg = f"Need at least 2 valid documents for similarity matrix (got {len(vec.doc_ids)})"
@@ -264,25 +269,24 @@ class Worker:
                 'documents_processed': len(vec.doc_ids),
                 'failed_files': failed_files,
                 'algorithm': vec.get_algorithm_label(),
+                'type': 'SIMILARITY_COMPUTE',
             }
-            # store job result
             self.queue_client.store_result(job.job_id, result)
             if self.db_ready:
                 store_job_result(job.job_id, result, worker_id=WORKER_ID)
-
-            # Save to file
             self._save_to_file(job.job_id, result)
-
-            # metrics
             JOBS_PROCESSED.labels(WORKER_ID).inc()
             JOB_DURATION.labels(WORKER_ID).observe(time.time() - job_start)
-            print(f"[{WORKER_ID}] ✓ Batch compute completed for {batch_id} (job {job.job_id})")
+            print(f"[{WORKER_ID}] ✓ Similarity compute completed for {batch_id} (job {job.job_id})")
+            self.queue_client.update_job_status(job.job_id, JobStatus.COMPLETED)
+            if self.db_ready:
+                update_job_status(job.job_id, JobStatus.COMPLETED.value, worker_id=WORKER_ID)
+            self._notify(batch_id, total, total, done=True)
             return True
         except Exception as e:
-            print(f"[{WORKER_ID}] ✗ Batch compute failed for {batch_id}: {e}")
+            print(f"[{WORKER_ID}] ✗ Similarity compute failed for {batch_id}: {e}")
             retries = int(self.queue_client.redis_client.hget(STALE_RETRY_KEY, job.job_id) or 0)
             if retries < MAX_RETRIES:
-                print(f"[{WORKER_ID}] Re-enqueuing batch job {job.job_id} (retry {retries + 1}/{MAX_RETRIES})")
                 self.queue_client.redis_client.hincrby(STALE_RETRY_KEY, job.job_id, 1)
                 self.queue_client.enqueue_job(job)
             else:

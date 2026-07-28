@@ -116,6 +116,31 @@ class TextVectorizer:
             print(f"[Vectorizer] TF-IDF compute error: {e}")
             return {}
 
+    def _compute_jaccard_matrix(self, n: int = 2) -> Dict[str, Dict[str, float]]:
+        """Compute pairwise Jaccard similarity using word n-grams.
+
+        Args:
+            n: n-gram size (2 = bigrams, 3 = trigrams). Default 2.
+        """
+        ids = list(self.doc_ids)
+        if not ids:
+            return {}
+        matrix = {}
+        for id1 in ids:
+            words1 = self.doc_texts[id1].lower().split()
+            ngrams1 = set(zip(*[words1[i:] for i in range(n)])) if len(words1) >= n else set(words1)
+            matrix[id1] = {}
+            for id2 in ids:
+                words2 = self.doc_texts[id2].lower().split()
+                ngrams2 = set(zip(*[words2[i:] for i in range(n)])) if len(words2) >= n else set(words2)
+                if not ngrams1 or not ngrams2:
+                    matrix[id1][id2] = 0.0
+                else:
+                    intersection = len(ngrams1 & ngrams2)
+                    union = len(ngrams1 | ngrams2)
+                    matrix[id1][id2] = intersection / union if union > 0 else 0.0
+        return matrix
+
     def compute_similarity_matrix(self) -> Dict[str, Dict[str, float]]:
         """Compute pairwise similarity between documents.
 

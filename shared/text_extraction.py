@@ -20,7 +20,6 @@ def extract_text(file_path: str) -> str:
             from docx import Document
             doc = Document(file_path)
             text = "\n".join(p.text for p in doc.paragraphs)
-            doc.close()
             return text
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()

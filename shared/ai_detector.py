@@ -193,32 +193,28 @@ class AIContentDetector:
         if self._gpt2_model is None:
             return 30.0, 0.3  # neutral fallback
 
-        import torch
+        # Single-pass perplexity on full text (no per-sentence loop — too slow on CPU)
+        ppl = self._perplexity_of(text)
 
+        # Statistical burstiness from sentence-length variance (microseconds, no neural net)
         sentences = self._split_sentences(text)
-        if len(sentences) < 2:
-            ppl = self._perplexity_of(text)
-            return ppl, 0.0
+        if len(sentences) >= 2:
+            sent_lens = [len(s.split()) for s in sentences]
+            mean_len = sum(sent_lens) / len(sent_lens)
+            if mean_len > 1e-8:
+                variance = sum((l - mean_len) ** 2 for l in sent_lens) / len(sent_lens)
+                burst = math.sqrt(variance) / mean_len
+            else:
+                burst = 0.0
+        else:
+            burst = 0.0
 
-        ppls = []
-        for sent in sentences:
-            p = self._perplexity_of(sent)
-            if p > 0:
-                ppls.append(p)
-
-        if not ppls:
-            return 30.0, 0.3
-
-        import numpy as np
-
-        mean_ppl = float(np.mean(ppls))
-        if mean_ppl < 1e-8:
-            return 30.0, 0.0
-        burst = float(np.std(ppls) / mean_ppl)
-        return mean_ppl, burst
+        return ppl, burst
 
     def _perplexity_of(self, text: str) -> float:
         import torch
+
+        torch.set_num_threads(1)
 
         try:
             inputs = self._gpt2_tokenizer(
@@ -277,9 +273,8 @@ class AIContentDetector:
         mean_len = sum(sent_lens) / n_sents
         sent_var = math.sqrt(sum((l - mean_len) ** 2 for l in sent_lens) / n_sents) / (mean_len + 1e-8)
 
-        trans_count = sum(1 for w in words if w in _TRANSITION_WORDS or any(
-            tw in text.lower() for tw in _TRANSITION_WORDS if " " in tw
-        ))
+        multi_word_in_text = any(tw in text.lower() for tw in _TRANSITION_WORDS if " " in tw)
+        trans_count = sum(1 for w in words if w in _TRANSITION_WORDS or multi_word_in_text)
         trans_rate = trans_count / (n_words + 1)
 
         hedge_count = sum(1 for w in words if w in _HEDGE_WORDS)

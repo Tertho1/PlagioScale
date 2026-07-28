@@ -47,6 +47,7 @@ export default function StudentComparison() {
       <div className="hero">
         <h1>Comparison Details</h1>
         <p>Submission: {details.submission_id?.slice(0, 12)}...</p>
+        <p style={{ color: "#64748b", fontSize: 14 }}>Roll: {comparisons[0]?.roll || "—"} · Filename: {comparisons[0]?.filename ? comparisons[0].filename.split("_").slice(3).join("_") : "—"}</p>
       </div>
 
       {comparisons.length === 0 ? (
@@ -64,6 +65,7 @@ export default function StudentComparison() {
               <tr>
                 <th>Compared With</th>
                 <th>Roll</th>
+                <th>Filename</th>
                 <th>Similarity</th>
               </tr>
             </thead>
@@ -72,6 +74,7 @@ export default function StudentComparison() {
                 <tr key={i}>
                   <td>{c.compared_with_name || "—"}</td>
                   <td>{c.compared_with_roll}</td>
+                  <td style={{ color: "#64748b", fontSize: 13 }}>{c.compared_with_filename ? c.compared_with_filename.split("_").slice(3).join("_") : "—"}</td>
                   <td>
                     <span className={`badge badge-${c.similarity_score > 0.5 ? "high" : c.similarity_score > 0.3 ? "medium" : "low"}`}>
                       {(c.similarity_score * 100).toFixed(1)}%
