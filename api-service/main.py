@@ -410,21 +410,33 @@ def get_current_user(
     access_token: str | None = Cookie(default=None),
     token_param: str | None = Query(default=None, alias="token"),
 ) -> dict:
-    """Resolve the current user from a Bearer JWT or httpOnly cookie."""
-    token = None
+    """Resolve the current user from a Bearer JWT, httpOnly cookie, or query param.
+
+    If a token source decodes successfully it is used; otherwise the next source
+    is tried. This prevents a stale localStorage token from blocking the httpOnly
+    cookie path.
+    """
+    candidates = []
     if authorization:
         prefix = "Bearer "
         if authorization.startswith(prefix):
-            token = authorization[len(prefix):].strip()
-    if not token:
-        token = access_token
-    if not token:
-        token = token_param
-    if not token:
+            candidates.append(authorization[len(prefix):].strip())
+    if access_token:
+        candidates.append(access_token)
+    if token_param:
+        candidates.append(token_param)
+
+    if not candidates:
         raise HTTPException(status_code=401, detail="Missing authorization")
 
-    user_id = decode_access_token(token)
-    if not user_id:
+    token = None
+    for c in candidates:
+        uid = decode_access_token(c)
+        if uid:
+            token = c
+            break
+
+    if not token:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}

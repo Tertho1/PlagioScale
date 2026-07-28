@@ -13,6 +13,22 @@ function deleteCookie(name) {
   document.cookie = `${name}=; max-age=0; path=/`;
 }
 
+function decodeJwtPayload(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    return JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+}
+
+export function isTokenExpired(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload || !payload.exp) return true;
+  return Date.now() >= payload.exp * 1000;
+}
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || getCookie("access_token") || "";
 }
@@ -85,7 +101,7 @@ export async function getAuthHeaders() {
   const token = getToken();
   const csrf = getCookie("csrf_token");
   const headers = {};
-  if (token) {
+  if (token && !isTokenExpired(token)) {
     headers["Authorization"] = `Bearer ${token}`;
   }
   if (csrf) {

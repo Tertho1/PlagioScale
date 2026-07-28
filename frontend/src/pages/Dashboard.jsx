@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { clearToken, getAuthHeaders, getStoredEmail, getToken } from "../utils/auth";
+import { clearToken, getAuthHeaders, getStoredEmail, getToken, isTokenExpired } from "../utils/auth";
 import { useBatchProgress } from "../utils/websocket";
 import BlindReviewToggle from "../components/BlindReviewToggle";
 import CollusionGraph from "../components/CollusionGraph";
@@ -162,6 +162,10 @@ export default function Dashboard() {
       }
     } catch (error) {
       setError(error.message);
+      if (error.message?.includes("authorization") || error.message?.includes("token") || error.message?.includes("401")) {
+        clearToken();
+        navigate("/auth");
+      }
     } finally {
       setRefreshing(false);
     }
@@ -360,6 +364,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!token) {
+      navigate("/auth");
+      return;
+    }
+    // Redirect immediately if the token is expired client-side
+    // (avoids a pointless API call that will 401)
+    if (isTokenExpired(token)) {
+      clearToken();
       navigate("/auth");
       return;
     }
