@@ -430,13 +430,15 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Missing authorization")
 
     token = None
+    user_id = None
     for c in candidates:
         uid = decode_access_token(c)
         if uid:
             token = c
+            user_id = uid
             break
 
-    if not token:
+    if not token or not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}
