@@ -1,3 +1,4 @@
+import PropTypes from "prop-types";
 import "../styles/portal.css";
 
 export default function BlindReviewToggle({ enabled, onToggle }) {
@@ -9,3 +10,8 @@ export default function BlindReviewToggle({ enabled, onToggle }) {
     </label>
   );
 }
+
+BlindReviewToggle.propTypes = {
+  enabled: PropTypes.bool,
+  onToggle: PropTypes.func,
+};

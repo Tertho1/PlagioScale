@@ -1,10 +1,10 @@
+import PropTypes from "prop-types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import "../styles/portal.css";
 
 export default function CollusionGraph({ matrix, labels, onNodeClick }) {
   const graphRef = useRef();
-  const containerRef = useRef();
   const [hovered, setHovered] = useState(null);
   const [dims, setDims] = useState({ width: 600, height: 400 });
 
@@ -46,7 +46,13 @@ export default function CollusionGraph({ matrix, labels, onNodeClick }) {
             color: `rgba(220, 38, 38, ${Math.max(0.3, score)})`,
             width: Math.max(1, score * 4),
           });
-        }
+}
+
+CollusionGraph.propTypes = {
+  matrix: PropTypes.arrayOf(PropTypes.arrayOf(PropTypes.number)),
+  labels: PropTypes.arrayOf(PropTypes.string),
+  onNodeClick: PropTypes.func,
+};
       }
     }
 

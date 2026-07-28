@@ -9,24 +9,24 @@ function scoreToColor(v){
 }
 
 export default function SimilarityMatrix({matrix, labels, onCellClick, maxDisplay=60}){
-  const n = matrix ? matrix.length : 0
-  if(!matrix || n===0) return <div>No similarity data</div>
-  if(n > maxDisplay){
-    return (
-      <div>
-        <p>Matrix too large to render in-grid ({n}×{n}). Use "Download CSV" or compute clusters.</p>
-        <p>Showing first {maxDisplay} rows/cols as preview.</p>
-        <SimilarityMatrixPreview matrix={matrix} labels={labels} onCellClick={onCellClick} previewSize={maxDisplay} />
-      </div>
-    )
-  }
-
   const handleCellKey = useCallback((e, i, j, cell) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onCellClick && onCellClick(i, j, cell);
     }
   }, [onCellClick]);
+
+  const n = matrix ? matrix.length : 0
+  if(!matrix || n===0) return <div>No similarity data</div>
+  if(n > maxDisplay){
+    return (
+      <div>
+        <p>Matrix too large to render in-grid ({n}&times;{n}). Use &ldquo;Download CSV&rdquo; or compute clusters.</p>
+        <p>Showing first {maxDisplay} rows/cols as preview.</p>
+        <SimilarityMatrixPreview matrix={matrix} labels={labels} onCellClick={onCellClick} previewSize={maxDisplay} />
+      </div>
+    )
+  }
 
   return (
     <div className="smatrix-root" role="grid" aria-label="Similarity matrix">

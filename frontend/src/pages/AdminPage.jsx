@@ -70,7 +70,7 @@ export default function AdminPage() {
         credentials: "include",
       });
       if (res.ok) setStats(await res.json());
-    } catch {}
+    } catch (e) { /* ignore fetch error */ }
   }
 
   async function loadUsers() {
@@ -86,7 +86,7 @@ export default function AdminPage() {
         setUsers(data.users || []);
         setTotalUsers(data.total || 0);
       }
-    } catch {}
+    } catch (e) { /* ignore fetch error */ }
   }
 
   function handleSearch(val) {
@@ -109,7 +109,7 @@ export default function AdminPage() {
         a.click();
         URL.revokeObjectURL(url);
       }
-    } catch {}
+    } catch (e) { /* ignore fetch error */ }
   }
 
   async function updateRole(userId, newRole) {

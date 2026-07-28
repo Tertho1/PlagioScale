@@ -339,7 +339,7 @@ export default function Dashboard() {
           const data = await res.json();
           return { text: data.text || "", roll: data.roll || "" };
         }
-      } catch {}
+      } catch (e) { /* ignore fetch error */ }
       return { text: "", roll: "" };
     }
 
@@ -555,7 +555,7 @@ export default function Dashboard() {
               <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
                 <h3 style={{ margin: "0 0 8px" }}>Delete assignment?</h3>
                 <p style={{ margin: "0 0 16px", color: "#64748b" }}>
-                  This will permanently delete "<strong>{selected.name}</strong>" and all its submissions and similarity data. Type the assignment name to confirm.
+                  This will permanently delete &ldquo;<strong>{selected.name}</strong>&rdquo; and all its submissions and similarity data. Type the assignment name to confirm.
                 </p>
                 <input
                   value={confirmDelete}

@@ -22,7 +22,7 @@ export default function CrossBatchPage() {
           const data = await res.json();
           setAssignments([...(data.owned || []), ...(data.shared || [])]);
         }
-      } catch {}
+      } catch (e) { /* ignore fetch error */ }
     })();
   }, []);
 
