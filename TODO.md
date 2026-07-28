@@ -265,3 +265,19 @@
 | 14.4 | Create `.dockerignore` + frontend `.dockerignore` | 🟢 LOW | Ops | Small | Speeds up builds by excluding `.git`, `node_modules`, etc. |
 | 14.5 | Update AGENTS.md + TODO.md | 🟢 LOW | Docs | Small | Document CI/CD architecture and status |
 
+### Round 15 — Similarity Compute + AI Detection Stability ✅
+
+| # | Fix | Priority | Area | Notes |
+|---|---|---|---|---|
+| 15.1 | AI detection timeout increase (30s → 600s) | 🟠 MEDIUM | Performance | `as_completed` timeout in worker `process_batch_compute` |
+| 15.2 | Stale job recovery reconciler | 🟠 MEDIUM | Resilience | `_recover_stale_jobs` fixes DB-FAILED/Redis-PROCESSING mismatch |
+| 15.3 | Persistent HF cache volume | 🟡 MEDIUM | Ops | `hf_cache` named volume, `chown 65532:65532`, `HF_HOME=/app/hf_cache` |
+| 15.4 | `local_files_only` first-attempt in `_load_gpt2` | 🟡 MEDIUM | Resilience | Avoids HuggingFace timeout on cache hit |
+| 15.5 | Meta tensor materialization in `_load_gpt2` | 🔴 HIGH | Bug | Detects meta device, reloads with explicit device |
+| 15.6 | `HF_HUB_DOWNLOAD_TIMEOUT=30` env var | 🟢 LOW | Ops | Added to worker docker-compose environment |
+| 15.7 | Auth headers on `computeSimilarity` call | 🟢 LOW | Bug | `getAuthHeaders()` added to POST fetch |
+| 15.8 | Tools navbar dropdown | 🟢 LOW | UI/UX | Already present in `main.jsx` — verified |
+| 15.9 | SBERT model global cache | 🟠 MEDIUM | Performance | `_get_sbert()` singleton in `vectorizer.py` prevents re-load per compute |
+| 15.10 | Worker model warmup at startup | 🟠 MEDIUM | Performance | `_warmup_models()` pre-loads DistilGPT2 + SBERT eagerly |
+| 15.11 | Auto-compute on new submission | 🟡 MEDIUM | Feature | Enqueues BATCH_COMPUTE job when submission count ≥ 2 |
+

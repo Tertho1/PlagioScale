@@ -41,16 +41,18 @@ function NavBar(){
             <Link to="/dashboard">Dashboard</Link>
             <Link to="/student/dashboard">My Dashboard</Link>
             <Link to="/cross-batch">Cross-Batch</Link>
-            <button type="button" className="nav-link" onClick={() => setShowTools(!showTools)}>Tools</button>
-            {showTools && (
-              <div style={{ position: "absolute", top: "100%", right: 0, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: 8, zIndex: 1000, display: "flex", flexDirection: "column", gap: 4, minWidth: 180 }}>
-                {TOOLS.map(t => (
-                  <a key={t.label} href={t.url} target="_blank" rel="noopener noreferrer" style={{ padding: "8px 12px", borderRadius: 6, textDecoration: "none", color: "#1e293b", display: "flex", alignItems: "center", gap: 8, fontSize: 14 }} onMouseOver={e => e.target.style.background = "#f1f5f9"} onMouseOut={e => e.target.style.background = "transparent"}>
-                    <span>{t.icon}</span> {t.label}
-                  </a>
-                ))}
-              </div>
-            )}
+            <div style={{ position: "relative" }}>
+              <button type="button" className="nav-link" onClick={() => setShowTools(!showTools)}>Tools</button>
+              {showTools && (
+                <div style={{ position: "absolute", top: "100%", left: 0, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: 8, zIndex: 1000, display: "flex", flexDirection: "column", gap: 4, minWidth: 180 }}>
+                  {TOOLS.map(t => (
+                    <a key={t.label} href={t.url} target="_blank" rel="noopener noreferrer" style={{ padding: "8px 12px", borderRadius: 6, textDecoration: "none", color: "#1e293b", display: "flex", alignItems: "center", gap: 8, fontSize: 14 }} onMouseOver={e => e.target.style.background = "#f1f5f9"} onMouseOut={e => e.target.style.background = "transparent"}>
+                      <span>{t.icon}</span> {t.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
             <span className="nav-email">{email}</span>
             <button
               type="button"

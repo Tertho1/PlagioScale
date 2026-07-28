@@ -951,6 +951,25 @@ async def portal_submit(
         logging.exception("Failed to broadcast progress for batch %s", batch_id)
 
     audit("submission.create", actor=user_id or "anonymous", resource=submission_hash, detail={"batch_id": batch_id, "roll": roll})
+
+    # Auto-trigger batch compute if enough submissions
+    try:
+        from shared.database import get_submissions_count_by_batch
+        count = await run_db(get_submissions_count_by_batch, batch_id) if db_ready else 0
+        if count >= 2:
+            auto_job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
+            auto_payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
+            auto_job = Job(job_id=auto_job_id, text=auto_payload)
+            await queue_client.enqueue_job(auto_job)
+            if db_ready:
+                try:
+                    await run_db(create_job_record, job_id=auto_job_id, text=auto_payload, status=JobStatus.PENDING.value)
+                except Exception:
+                    logging.warning("Failed to create job record for auto-batch-compute %s", auto_job_id)
+            logging.info("Auto-triggered batch compute for %s (%d submissions)", batch_id, count)
+    except Exception:
+        logging.exception("Failed to auto-trigger batch compute for %s", batch_id)
+
     return {"submission_hash": submission_hash, "queued": bool(queued)}
 
 

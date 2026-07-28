@@ -196,17 +196,22 @@ export default function Dashboard() {
 
   async function computeSimilarity() {
     if (!selectedId) return;
+    console.log("[Compute] Starting compute for batch:", selectedId);
     setError("");
     setComputing(true);
     try {
-      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST", credentials: "include" });
+      console.log("[Compute] POST /portal/compute-similarity/");
+      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST", headers: await getAuthHeaders(), credentials: "include" });
+      console.log("[Compute] Response status:", response.status);
       const data = await response.json().catch(() => ({}));
+      console.log("[Compute] Response body:", data);
       if (!response.ok) {
         setError(data.detail || "Failed to queue compute");
         setComputing(false);
         return;
       }
       const jobId = data.job_id;
+      console.log("[Compute] Job queued, jobId:", jobId);
       let status = null;
       let jobError = null;
       for (let i = 0; i < 300; i++) {
@@ -214,20 +219,30 @@ export default function Dashboard() {
           const sres = await fetch(`${API_BASE}/status/${jobId}`, { credentials: "include" });
           if (sres.ok) {
             const sjson = await sres.json();
+            console.log(`[Compute] Poll ${i + 1}: status=`, sjson.status, "error=", sjson.error);
             status = sjson.status;
             jobError = sjson.error || null;
-            if (status === "COMPLETED" || status === "FAILED") break;
+            if (status === "COMPLETED" || status === "FAILED") {
+              console.log("[Compute] Terminal status reached:", status);
+              break;
+            }
+          } else {
+            console.log(`[Compute] Poll ${i + 1}: status endpoint returned ${sres.status}`);
           }
-        } catch (e) { /* ignore transient */ }
+        } catch (e) { console.log(`[Compute] Poll ${i + 1}: fetch error:`, e); }
         await new Promise((r) => setTimeout(r, 2000));
       }
+      console.log("[Compute] Poll loop ended. Final status:", status, "jobError:", jobError);
       if (status !== "COMPLETED") {
         setError(jobError || "Compute failed or timed out");
         setComputing(false);
         return;
       }
+      console.log("[Compute] Job completed, refreshing assignment details");
       await loadAssignmentDetails(selectedId);
+      console.log("[Compute] Assignment details refreshed successfully");
     } catch (e) {
+      console.log("[Compute] Unhandled error:", e);
       setError(e?.message || "Compute failed");
     } finally {
       setComputing(false);

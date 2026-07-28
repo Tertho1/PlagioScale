@@ -95,3 +95,16 @@ grafana/             # Pre-provisioned dashboards
 
 All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
 
+## Round 15 — Similarity Compute + AI Detection Stability ✅
+
+| # | Fix | Status | Notes |
+|---|---|---|---|
+| 15.1 | AI detection timeout increase (30s → 600s) | ✅ | `as_completed` timeout in `process_batch_compute` |
+| 15.2 | Stale job recovery reconciler | ✅ | `_recover_stale_jobs` fixes DB-FAILED/Redis-PROCESSING mismatch |
+| 15.3 | Persistent HF cache volume | ✅ | `hf_cache` named volume, `chown 65532:65532`, `HF_HOME=/app/hf_cache` |
+| 15.4 | `local_files_only` first-attempt in `_load_gpt2` | ✅ | Avoids HuggingFace timeout on cache hit |
+| 15.5 | Meta tensor materialization in `_load_gpt2` | ✅ | Detects meta device, reloads with explicit device |
+| 15.6 | `HF_HUB_DOWNLOAD_TIMEOUT=30` env var | ✅ | Added to worker docker-compose environment |
+| 15.7 | Auth headers on `computeSimilarity` call | ✅ | `getAuthHeaders()` added to POST fetch |
+| 15.8 | Tools navbar dropdown | ✅ | Already present in `main.jsx` — verified
+

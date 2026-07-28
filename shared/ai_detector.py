@@ -118,6 +118,12 @@ class AIContentDetector:
                 self._gpt2_tokenizer = AutoTokenizer.from_pretrained(_GPT2_MODEL)
                 model = AutoModelForCausalLM.from_pretrained(_GPT2_MODEL)
 
+            # Check if model landed on meta device (newer transformers lazy-load)
+            param = next(model.parameters(), None)
+            if param is not None and param.device.type == 'meta':
+                logger.warning("GPT2 model on meta device — reloading with explicit device")
+                model = AutoModelForCausalLM.from_pretrained(_GPT2_MODEL)
+
             model = model.to("cpu")
             model.eval()
             self._gpt2_model = model

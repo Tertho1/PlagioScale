@@ -129,6 +129,7 @@ services:
       - PYTHONUNBUFFERED=1
       - USE_MTLS=${USE_MTLS:-false}
       - HF_HOME=/app/hf_cache
+      - HF_HUB_DOWNLOAD_TIMEOUT=30
     volumes:
       - uploads_data:/app/uploads
       - worker_storage:/app/storage

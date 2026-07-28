@@ -72,7 +72,25 @@ class Worker:
             print(f"[{WORKER_ID}] AI content detector loaded")
         else:
             print(f"[{WORKER_ID}] AI content detector not available (will skip AI scoring)")
+        # Eagerly pre-load models so batch compute is fast
+        self._warmup_models()
         print(f"[{WORKER_ID}] Worker initialized")
+
+    def _warmup_models(self):
+        """Pre-load heavyweight models at startup to avoid cold-start delay."""
+        try:
+            print(f"[{WORKER_ID}] Pre-loading DistilGPT2 for AI detection...")
+            self.ai_detector._load_gpt2()
+            print(f"[{WORKER_ID}] DistilGPT2 loaded")
+        except Exception as e:
+            print(f"[{WORKER_ID}] DistilGPT2 warmup skipped: {e}")
+        try:
+            print(f"[{WORKER_ID}] Pre-loading SBERT model for similarity...")
+            from shared.vectorizer import _get_sbert
+            _get_sbert("all-MiniLM-L12-v2")
+            print(f"[{WORKER_ID}] SBERT model loaded")
+        except Exception as e:
+            print(f"[{WORKER_ID}] SBERT warmup skipped: {e}")
 
     def process_job(self, job: Job) -> bool:
         """

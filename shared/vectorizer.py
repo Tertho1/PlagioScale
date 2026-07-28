@@ -11,11 +11,18 @@ except Exception:
     np = None
 
 TRY_ST_MODEL = False
+_sbert_model_cache = None
 try:
     from sentence_transformers import SentenceTransformer
     TRY_ST_MODEL = True
 except Exception:
     TRY_ST_MODEL = False
+
+def _get_sbert(model_name: str):
+    global _sbert_model_cache
+    if _sbert_model_cache is None:
+        _sbert_model_cache = SentenceTransformer(model_name)
+    return _sbert_model_cache
 
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -39,7 +46,7 @@ class TextVectorizer:
         self.model_name = model_name
         if self.use_embeddings:
             try:
-                self.model = SentenceTransformer(model_name)
+                self.model = _get_sbert(model_name)
             except Exception:
                 self.use_embeddings = False
 
