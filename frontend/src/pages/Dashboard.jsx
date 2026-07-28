@@ -263,6 +263,7 @@ export default function Dashboard() {
         credentials: "include",
         body: JSON.stringify({ name: renameValue.trim() }),
       });
+      if (res.status === 401) { clearToken(); navigate("/auth"); return; }
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.detail || "Failed to rename");
@@ -285,6 +286,7 @@ export default function Dashboard() {
         headers: await getAuthHeaders(),
         credentials: "include",
       });
+      if (res.status === 401) { clearToken(); navigate("/auth"); return; }
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.detail || "Failed to delete");
@@ -605,7 +607,9 @@ export default function Dashboard() {
                 <SimilarityMatrix matrix={matrix} labels={displayLabels} onCellClick={handleCellClick} />
               </div>
 
-              <CollusionGraph matrix={matrix} labels={displayLabels} />
+              {matrix && displayLabels && matrix.length === displayLabels.length && matrix.length >= 3 && (
+                <CollusionGraph matrix={matrix} labels={displayLabels} />
+              )}
             </>
           ) : (
             <div className="empty-state empty-state-large">

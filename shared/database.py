@@ -580,6 +580,7 @@ def delete_assignment(batch_id: str) -> bool:
                 SimilarityResult.batch_id == batch_id,
             ).delete()
             session.delete(record)
+            session.commit()
             return True
     except Exception as exc:
         print(f"⚠ Failed deleting assignment {batch_id}: {exc}")
