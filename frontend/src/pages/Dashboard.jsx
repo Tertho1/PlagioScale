@@ -67,6 +67,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [computing, setComputing] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -258,7 +259,7 @@ export default function Dashboard() {
 
   async function handleRename() {
     if (!selectedId || !renameValue.trim()) return;
-    setRenaming(true);
+    setSaving(true);
     setError("");
     try {
       const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
@@ -272,11 +273,16 @@ export default function Dashboard() {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.detail || "Failed to rename");
       }
+      const newName = renameValue.trim();
+      setSaving(false);
       setRenaming(false);
-      setSelected((s) => (s ? { ...s, name: renameValue.trim() } : s));
+      setSelected((s) => (s ? { ...s, name: newName } : s));
+      setOwnedAssignments((prev) => prev.map((a) => a.batch_id === selectedId ? { ...a, name: newName } : a));
+      setSharedAssignments((prev) => prev.map((a) => a.batch_id === selectedId ? { ...a, name: newName } : a));
+      setRenameValue("");
     } catch (e) {
       setError(e.message);
-      setRenaming(false);
+      setSaving(false);
     }
   }
 
@@ -513,7 +519,7 @@ export default function Dashboard() {
                     style={{ fontSize: 20, fontWeight: 700, padding: "4px 8px" }}
                     autoFocus
                   />
-                  <button className="button-sm button" onClick={handleRename} disabled={renaming}>Save</button>
+                  <button className="button-sm button" onClick={handleRename} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
                   <button className="button-sm button-secondary" onClick={() => { setRenaming(false); setRenameValue(""); }}>Cancel</button>
                 </div>
               ) : (
