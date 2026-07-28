@@ -13,7 +13,7 @@ os.environ.setdefault("DB_HOST", "localhost")
 os.environ.setdefault("REDIS_HOST", "localhost")
 os.environ.setdefault("REDIS_PASSWORD", "plagio_redis_pass")
 
-import main  # noqa: F401 -- ensures env vars are set before app import
+import main  # noqa: E402, F401
 
 client = TestClient(main.app)
 

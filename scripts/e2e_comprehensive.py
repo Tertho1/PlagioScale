@@ -1,6 +1,7 @@
 """Comprehensive E2E test exercising all pipelines."""
 
-import sys, time, os, traceback
+import sys
+import time
 
 import requests
 
@@ -32,7 +33,8 @@ def mon_url(path):
     return f"{MON_API}{path}"
 
 _token = None
-_headers = lambda: {"Authorization": f"Bearer {_token}"} if _token else {}
+def _headers():
+    return {"Authorization": f"Bearer {_token}"} if _token else {}
 
 def login_or_signup(email="admin@test.com", password="admin123", name="Admin"):
     global _token
@@ -56,7 +58,7 @@ def signup_student(email, password, name="Student"):
             if r.status_code == 200:
                 return r.json()["access_token"]
         time.sleep(1)
-    raise RuntimeError(f"Student auth failed after 3 attempts")
+    raise RuntimeError("Student auth failed after 3 attempts")
 
 def create_assignment(name="E2E Test", expected_count=3):
     r = requests.post(url("/portal/assignments"), json={"name": name, "expected_count": expected_count}, headers=_headers(), timeout=5)

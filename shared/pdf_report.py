@@ -1,24 +1,22 @@
 import io
 import logging
-import os
-import tempfile
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _REPORTLAB_AVAILABLE = False
 try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch, mm
     from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
     from reportlab.platypus import (
-        SimpleDocTemplate,
+        PageBreak,
         Paragraph,
+        SimpleDocTemplate,
         Spacer,
         Table,
         TableStyle,
-        PageBreak,
     )
 
     _REPORTLAB_AVAILABLE = True

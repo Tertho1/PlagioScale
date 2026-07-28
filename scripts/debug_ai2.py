@@ -1,4 +1,6 @@
-import requests, time
+import time
+
+import requests
 
 r = requests.post('http://localhost:8000/submit', json={'text':'This is a test for AI detection pipeline.'}, timeout=10)
 print('submit:', r.status_code, r.json())

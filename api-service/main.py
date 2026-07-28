@@ -40,51 +40,48 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from functools import partial
 from typing import Optional as _Optional
 
-import redis.asyncio as aioredis
-
-from jose import JWTError, jwt
 import bcrypt as _bcrypt
+import redis.asyncio as aioredis
+from jose import JWTError, jwt
 
+from shared.audit_log import audit
 from shared.database import (
     create_assignment as db_create_assignment,
-    delete_assignment,
-    update_assignment,
 )
 from shared.database import (
     create_job_record,
     create_notification,
     create_submission,
     create_user,
-    get_active_submission_by_batch_and_roll,
+    delete_assignment,
     get_admin_stats,
-    get_paginated_users,
     get_assignment,
     get_assignment_by_access_code,
     get_cross_batch_comparisons,
     get_job_record,
+    get_paginated_users,
     get_pending_notifications,
     get_similarity_matrix,
     get_student_comparison_details,
+    get_submission_by_id,
     get_submissions_by_batch,
     get_submissions_count_by_batch,
-    get_submission_by_id,
     get_user_by_email,
     get_user_by_id,
     init_db,
     list_assignments,
     mark_notification_sent,
+    update_assignment,
     update_job_status,
-    update_submission_status,
     update_user_role,
 )
+from shared.email_notifier import notify_completion, send_email
+from shared.external_lookup import search_external_sources
 from shared.models import Job, JobStatus
+from shared.pdf_report import generate_similarity_report_pdf
 from shared.queue_client import AsyncQueueClient
 from shared.text_extraction import extract_text
 from shared.vectorizer import TextVectorizer
-from shared.audit_log import audit
-from shared.email_notifier import send_email, notify_completion
-from shared.external_lookup import search_external_sources
-from shared.pdf_report import generate_similarity_report_pdf
 
 # Websocket connections per batch (kept in-memory for active sockets)
 ws_connections: dict[str, set[WebSocket]] = {}
@@ -163,8 +160,8 @@ async def _cleanup_old_data():
         if not db_ready:
             continue
         try:
-            from shared.database import Submission, SessionLocal
-            from sqlalchemy import text
+
+            from shared.database import SessionLocal, Submission
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
             session = SessionLocal()
             try:
@@ -218,6 +215,7 @@ async def _monitor_db():
         loop = asyncio.get_event_loop()
         try:
             from sqlalchemy import text
+
             from shared.database import SessionLocal
             session = SessionLocal()
             session.execute(text("SELECT 1"))
@@ -478,6 +476,9 @@ def require_role(required_role: str):
             raise HTTPException(status_code=403, detail=f"{required_role} role required")
         return current_user
     return role_checker
+
+
+def verify_worker_secret(x_worker_secret: str | None = Header(default=None, alias="X-Worker-Secret")) -> bool:
     """Verify that the request comes from an authorized worker."""
     if not WORKER_SECRET:
         return False
@@ -1001,7 +1002,7 @@ async def portal_submit(
     queued = False
     # Auto-trigger parallel AI detection + similarity compute if enough submissions
     try:
-        from shared.database import get_submissions_count_by_batch, get_active_batch_compute_for_batch
+        from shared.database import get_active_batch_compute_for_batch, get_submissions_count_by_batch
         count = await run_db(get_submissions_count_by_batch, batch_id) if db_ready else 0
         if count >= 2 and db_ready:
             existing = await run_db(get_active_batch_compute_for_batch, batch_id)

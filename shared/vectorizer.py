@@ -104,8 +104,8 @@ class TextVectorizer:
         texts = [self.doc_texts[i] for i in ids]
         try:
             tf = TfidfVectorizer(stop_words='english', max_features=20000)
-            X = tf.fit_transform(texts)
-            sim = cosine_similarity(X)
+            x = tf.fit_transform(texts)
+            sim = cosine_similarity(x)
             matrix = {}
             for i, id1 in enumerate(ids):
                 matrix[id1] = {}

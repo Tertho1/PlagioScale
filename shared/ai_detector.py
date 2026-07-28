@@ -102,7 +102,6 @@ class AIContentDetector:
         if self._gpt2_model is not None:
             return
         try:
-            import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
             # Try loading from cache first (local_files_only) to avoid HF timeouts
@@ -202,7 +201,7 @@ class AIContentDetector:
             sent_lens = [len(s.split()) for s in sentences]
             mean_len = sum(sent_lens) / len(sent_lens)
             if mean_len > 1e-8:
-                variance = sum((l - mean_len) ** 2 for l in sent_lens) / len(sent_lens)
+                variance = sum((sl - mean_len) ** 2 for sl in sent_lens) / len(sent_lens)
                 burst = math.sqrt(variance) / mean_len
             else:
                 burst = 0.0
@@ -271,7 +270,7 @@ class AIContentDetector:
 
         sent_lens = [len(s.split()) for s in sentences]
         mean_len = sum(sent_lens) / n_sents
-        sent_var = math.sqrt(sum((l - mean_len) ** 2 for l in sent_lens) / n_sents) / (mean_len + 1e-8)
+        sent_var = math.sqrt(sum((sl - mean_len) ** 2 for sl in sent_lens) / n_sents) / (mean_len + 1e-8)
 
         multi_word_in_text = any(tw in text.lower() for tw in _TRANSITION_WORDS if " " in tw)
         trans_count = sum(1 for w in words if w in _TRANSITION_WORDS or multi_word_in_text)

@@ -1,11 +1,10 @@
 """Integration tests for the worker service."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from shared.models import Job, JobStatus
-from shared.plagiarism import compare_with_database
 
 
 @pytest.mark.integration
@@ -79,6 +78,7 @@ def test_process_job_short_text(mock_qc_init, mock_init_db):
 @patch("worker.store_similarity_results")
 def test_process_batch_compute(mock_store_sim, mock_req_post, mock_extract, mock_scorer, mock_subs, mock_qc_init, mock_init_db):
     import json
+
     import worker
 
     mock_qc = mock_qc_init.return_value
@@ -149,6 +149,7 @@ def test_process_cancelled_job(mock_getrecord, mock_qc_init, mock_init_db):
 def test_process_batch_compute_fails_on_extraction_error(mock_store_sim, mock_req_post, mock_scorer, mock_subs, mock_qc_init, mock_init_db):
     """Batch compute should FAIL when all documents fail text extraction."""
     import json
+
     import worker
 
     mock_qc = mock_qc_init.return_value

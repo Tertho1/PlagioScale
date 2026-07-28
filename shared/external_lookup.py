@@ -2,7 +2,7 @@ import hashlib
 import logging
 import re
 import time
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 

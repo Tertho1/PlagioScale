@@ -1,10 +1,10 @@
 """
 Redis queue client for job management.
 """
+import asyncio
 import json
 import os
 import time
-import asyncio
 from typing import Optional
 
 import redis

@@ -3,8 +3,6 @@ Stress testing script - simulates multiple plagiarism detection requests.
 Includes autoscaling verification phase.
 """
 
-import json
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -117,7 +115,7 @@ def stress_test(num_jobs: int = 20, num_workers: int = 5):
         response = requests.get(f"{API_URL}/queue/stats")
         stats = response.json()
         print(f"Queue Stats: {stats['message']}\n")
-    except:
+    except Exception:
         pass
 
     # Phase 4: Monitor job completion

@@ -115,7 +115,7 @@ def test_full_pipeline(auth_headers):
         timeout=5,
     )
     assert resp.status_code == 200, f"Compute similarity failed: {resp.text}"
-    job_id = resp.json()["job_id"]
+    resp.json()["job_id"]
 
     # ------------------------------------------------------------------ #
     # 5. Poll for similarity results (worker may take a few seconds)

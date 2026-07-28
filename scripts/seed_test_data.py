@@ -8,19 +8,18 @@ Usage:
 
 import argparse
 import hashlib
+
+# Add project root to path
+import os
 import random
-import string
 import sys
 import uuid
 from datetime import datetime, timezone
 
-# Add project root to path
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.database import get_db_connection, init_db
 from shared.models import UserRole
-
 
 SAMPLE_TEXTS = [
     "Machine learning is a powerful tool for data analysis and prediction in modern computing systems.",
@@ -77,7 +76,7 @@ def seed_database(batches=2, students_per_batch=5):
             "INSERT INTO users (id, email, password_hash, role, created_at) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
             (admin_id, "admin@plagioscale.local", admin_hash, UserRole.ADMIN.value, now)
         )
-        print(f"  ✓ Admin user: admin@plagioscale.local / admin123")
+        print("  ✓ Admin user: admin@plagioscale.local / admin123")
 
         # Create batches
         for b in range(1, batches + 1):
@@ -143,13 +142,13 @@ def seed_database(batches=2, students_per_batch=5):
                 "INSERT INTO similarity_matrices (batch_id, matrix_data, created_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (batch_id, json.dumps({"matrix": matrix}), now)
             )
-            print(f"    ✓ Similarity matrix generated")
+            print("    ✓ Similarity matrix generated")
 
         conn.commit()
-        print(f"\n✓ Database seeded successfully!")
+        print("\n✓ Database seeded successfully!")
         print(f"  Batches: {batches}")
         print(f"  Students: {batches * students_per_batch}")
-        print(f"  Admin login: admin@plagioscale.local / admin123")
+        print("  Admin login: admin@plagioscale.local / admin123")
 
     except Exception as e:
         conn.rollback()

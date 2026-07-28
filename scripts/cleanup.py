@@ -1,4 +1,5 @@
 import psycopg
+
 conn = psycopg.connect('host=postgres dbname=plagioscale user=plagio password=plagio_pass')
 cur = conn.cursor()
 # Clean up old batch compute jobs for this batch so user can start fresh

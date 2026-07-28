@@ -1,17 +1,16 @@
 """Generate self-signed dev certificates for mTLS using Python cryptography."""
-import os
 import sys
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 CERT_DIR = Path(__file__).parent
 
 try:
     from cryptography import x509
-    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.backends import default_backend
+    from cryptography.x509.oid import NameOID
 except ImportError:
     print("Install cryptography: pip install cryptography")
     sys.exit(1)
@@ -121,7 +120,7 @@ def main():
     print("Done — certs generated in certs/")
     print("\nAdd to docker-compose volumes:")
     for name, _ in SERVICES:
-        print(f"  - ./certs:/app/certs:ro")
+        print("  - ./certs:/app/certs:ro")
 
     # Also generate a combined PEM for clients that need both cert and key
     for name, _ in SERVICES:

@@ -71,7 +71,7 @@ class PlagiarismDetector:
     def detect(self, original_text: str, suspicious_text: str) -> dict:
         """
         Detect plagiarism between two texts.
-        
+
         Returns:
             dict with similarity scores and detection result
         """
@@ -100,12 +100,12 @@ class PlagiarismDetector:
 
 # Example source documents (mock database)
 MOCK_DATABASE = [
-    """Machine learning is a subset of artificial intelligence that focuses on 
-       the development of algorithms and statistical models that enable computers 
+    """Machine learning is a subset of artificial intelligence that focuses on
+       the development of algorithms and statistical models that enable computers
        to improve their performance on tasks through experience.""",
     """Cloud computing provides on-demand access to computing resources over the internet.
        Users can access servers, storage, and databases without maintaining physical hardware.""",
-    """Distributed systems consist of multiple autonomous computers that communicate 
+    """Distributed systems consist of multiple autonomous computers that communicate
        through a network to achieve a common goal."""
 ]
 

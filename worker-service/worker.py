@@ -91,10 +91,10 @@ class Worker:
     def process_job(self, job: Job) -> bool:
         """
         Process a single job.
-        
+
         Args:
             job: Job to process
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -360,8 +360,8 @@ class Worker:
         if not self.db_ready:
             return
         try:
+
             from shared.database import JobRecord, SessionLocal
-            from sqlalchemy import text
             cutoff = datetime.now(timezone.utc) - timedelta(seconds=STALE_JOB_TIMEOUT)
             session = SessionLocal()
             try:
@@ -443,6 +443,7 @@ class Worker:
                 if now - last_db_check >= 30:
                     try:
                         from sqlalchemy import text
+
                         from shared.database import SessionLocal
                         session = SessionLocal()
                         session.execute(text("SELECT 1"))
