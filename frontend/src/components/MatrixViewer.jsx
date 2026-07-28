@@ -82,12 +82,22 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
 
         <div className="grid-2" style={{marginTop:18}}>
           <div className="surface" style={{padding:18, background:'rgba(255,255,255,.92)'}}>
-            <div className="field-title" style={{marginBottom:10}}>Left submission</div>
-            <pre style={{whiteSpace:'pre-wrap', maxHeight:420, overflow:'auto', background:'rgba(37,99,235,.05)', padding:16, borderRadius:14, margin:0, lineHeight:1.7}}>{leftSubmission?.text || leftSubmission?.snippet || 'No text available'}</pre>
+            <div className="field-title" style={{marginBottom:4}}>Left submission</div>
+            <div style={{fontSize:13, color:'#475569', marginBottom:8, lineHeight:1.6}}>
+              <div><strong>Roll:</strong> {leftSubmission?.roll || "—"}</div>
+              <div><strong>Name:</strong> {leftSubmission?.name || "—"}</div>
+              <div><strong>File:</strong> {leftSubmission?.filename ? leftSubmission.filename.split("_").slice(3).join("_") : "—"}</div>
+            </div>
+            <pre style={{whiteSpace:'pre-wrap', maxHeight:380, overflow:'auto', background:'rgba(37,99,235,.05)', padding:16, borderRadius:14, margin:0, lineHeight:1.7}}>{leftSubmission?.text || leftSubmission?.snippet || 'No text available'}</pre>
           </div>
           <div className="surface" style={{padding:18, background:'rgba(255,255,255,.92)'}}>
-            <div className="field-title" style={{marginBottom:10}}>Right submission</div>
-            <pre style={{whiteSpace:'pre-wrap', maxHeight:420, overflow:'auto', background:'rgba(124,58,237,.05)', padding:16, borderRadius:14, margin:0, lineHeight:1.7}}>{rightSubmission?.text || rightSubmission?.snippet || 'No text available'}</pre>
+            <div className="field-title" style={{marginBottom:4}}>Right submission</div>
+            <div style={{fontSize:13, color:'#475569', marginBottom:8, lineHeight:1.6}}>
+              <div><strong>Roll:</strong> {rightSubmission?.roll || "—"}</div>
+              <div><strong>Name:</strong> {rightSubmission?.name || "—"}</div>
+              <div><strong>File:</strong> {rightSubmission?.filename ? rightSubmission.filename.split("_").slice(3).join("_") : "—"}</div>
+            </div>
+            <pre style={{whiteSpace:'pre-wrap', maxHeight:380, overflow:'auto', background:'rgba(124,58,237,.05)', padding:16, borderRadius:14, margin:0, lineHeight:1.7}}>{rightSubmission?.text || rightSubmission?.snippet || 'No text available'}</pre>
           </div>
         </div>
       </div>

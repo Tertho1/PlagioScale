@@ -316,29 +316,44 @@ export default function Dashboard() {
     let leftText = "";
     let rightText = "";
 
+    const leftSub = submissions.find(s => s.submission_id === leftId);
+    const rightSub = submissions.find(s => s.submission_id === rightId);
+
     async function fetchText(subId) {
       try {
         const res = await fetch(
           `${API_BASE}/portal/submissions/${selectedId}/${subId}/text`,
-          { credentials: "include" }
+          { headers: await getAuthHeaders(), credentials: "include" }
         );
         if (res.ok) {
           const data = await res.json();
-          return data.text || "";
+          return { text: data.text || "", roll: data.roll || "" };
         }
-      } catch {
-        // fallback to empty
-      }
-      return "";
+      } catch {}
+      return { text: "", roll: "" };
     }
 
-    if (leftId) leftText = await fetchText(leftId);
-    if (rightId) rightText = await fetchText(rightId);
+    const leftResult = leftId ? await fetchText(leftId) : { text: "", roll: "" };
+    const rightResult = rightId ? await fetchText(rightId) : { text: "", roll: "" };
 
     setViewer({
       open: true,
-      left: { id: leftId, label: leftLabel, text: leftText },
-      right: { id: rightId, label: rightLabel, text: rightText },
+      left: {
+        id: leftId,
+        label: leftLabel,
+        text: leftResult.text,
+        roll: leftSub?.roll || leftResult.roll,
+        name: leftSub?.name || "",
+        filename: leftSub?.filename || "",
+      },
+      right: {
+        id: rightId,
+        label: rightLabel,
+        text: rightResult.text,
+        roll: rightSub?.roll || rightResult.roll,
+        name: rightSub?.name || "",
+        filename: rightSub?.filename || "",
+      },
       similarity: cellValue,
     });
   }, [submissions, labels, selectedId]);

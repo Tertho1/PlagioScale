@@ -87,7 +87,7 @@ from shared.pdf_report import generate_similarity_report_pdf
 # Websocket connections per batch (kept in-memory for active sockets)
 ws_connections: dict[str, set[WebSocket]] = {}
 _ws_rate: dict[str, list[float]] = {}
-_WS_RATE_LIMIT = 10
+_WS_RATE_LIMIT = 30
 _WS_RATE_WINDOW = 60
 _WS_PUBSUB_CHANNEL = "ws:progress"
 _ws_redis: _Optional[aioredis.Redis] = None
