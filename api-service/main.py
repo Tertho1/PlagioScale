@@ -47,6 +47,8 @@ import bcrypt as _bcrypt
 
 from shared.database import (
     create_assignment as db_create_assignment,
+    delete_assignment,
+    update_assignment,
 )
 from shared.database import (
     create_job_record,
@@ -324,7 +326,7 @@ JWT_SECRET = os.getenv("JWT_SECRET")
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET environment variable must be set")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 WORKER_SECRET = os.getenv("WORKER_SECRET", "")
 CSRF_SECRET = os.getenv("CSRF_SECRET", JWT_SECRET)
 
