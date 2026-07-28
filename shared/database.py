@@ -641,6 +641,25 @@ def get_submissions_count_by_batch(batch_id: str) -> int:
         return 0
 
 
+def get_active_batch_compute_for_batch(batch_id: str) -> Optional[str]:
+    """Check if a batch compute job for this batch is already PENDING or PROCESSING."""
+    try:
+        prefix = f"batch-{batch_id}-"
+        with get_session() as session:
+            existing = (
+                session.query(JobRecord)
+                .filter(
+                    JobRecord.job_id.like(f"{prefix}%"),
+                    JobRecord.status.in_(["PENDING", "PROCESSING"]),
+                )
+                .first()
+            )
+            return existing.status if existing else None
+    except Exception as exc:
+        print(f"⚠ Failed checking active batch compute for {batch_id}: {exc}")
+        return None
+
+
 def update_submission_status(submission_id: str, status: str) -> bool:
     try:
         with get_session() as session:
