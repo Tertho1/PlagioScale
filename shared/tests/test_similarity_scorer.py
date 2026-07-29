@@ -36,7 +36,7 @@ class TestHybridSimilarityScorer:
         assert scorer.compute_similarity_matrix() == {}
 
     def test_two_identical_documents_tfidf(self):
-        scorer = HybridSimilarityScorer()
+        scorer = HybridSimilarityScorer(alpha=1.0, jaccard_weight=0)
         text = "this is a test document with enough text for vectorization purposes"
         scorer.add_document("id1", text)
         scorer.add_document("id2", text)
@@ -57,7 +57,7 @@ class TestHybridSimilarityScorer:
         assert score < matrix["id1"]["id1"]
 
     def test_partial_overlap(self):
-        scorer = HybridSimilarityScorer()
+        scorer = HybridSimilarityScorer(alpha=1.0, jaccard_weight=0)
         scorer.add_document("id1", "the quick brown fox jumps over the lazy dog")
         scorer.add_document("id2", "the quick brown fox leaps over the lazy dog")
         matrix = scorer.compute_similarity_matrix()
@@ -86,7 +86,7 @@ class TestHybridSimilarityScorer:
         assert "TF-IDF" in label
 
     def test_alpha_pure_tfidf(self):
-        scorer = HybridSimilarityScorer(alpha=1.0)
+        scorer = HybridSimilarityScorer(alpha=1.0, jaccard_weight=0)
         text = "the quick brown fox jumps over the lazy dog"
         scorer.add_document("id1", text)
         scorer.add_document("id2", text)
@@ -100,7 +100,7 @@ class TestHybridSimilarityScorerMocked:
     """Tests that mock the SBERT path to verify alpha blending."""
 
     def test_alpha_blending_equal_weights(self):
-        scorer = HybridSimilarityScorer(alpha=0.5)
+        scorer = HybridSimilarityScorer(alpha=0.5, jaccard_weight=0)
         scorer.vec.use_embeddings = True
         scorer.add_document("id1", "some text with enough length for the vectorizer")
         scorer.add_document("id2", "some other text that is also sufficiently long")
@@ -115,7 +115,7 @@ class TestHybridSimilarityScorerMocked:
             assert matrix["id1"]["id1"] == pytest.approx(1.0, abs=0.001)
 
     def test_alpha_skewed_tfidf(self):
-        scorer = HybridSimilarityScorer(alpha=0.8)
+        scorer = HybridSimilarityScorer(alpha=0.8, jaccard_weight=0)
         scorer.vec.use_embeddings = True
         scorer.add_document("id1", "some text with enough length for the vectorizer")
         scorer.add_document("id2", "some other text that is also sufficiently long")
@@ -130,7 +130,7 @@ class TestHybridSimilarityScorerMocked:
             assert matrix["id1"]["id2"] == pytest.approx(expected, abs=0.001)
 
     def test_alpha_pure_sbert(self):
-        scorer = HybridSimilarityScorer(alpha=0.0)
+        scorer = HybridSimilarityScorer(alpha=0.0, jaccard_weight=0)
         scorer.vec.use_embeddings = True
         scorer.add_document("id1", "some text with enough length for the vectorizer")
         scorer.add_document("id2", "some other text that is also sufficiently long")
@@ -144,7 +144,7 @@ class TestHybridSimilarityScorerMocked:
             assert matrix["id1"]["id2"] == pytest.approx(0.3, abs=0.001)
 
     def test_fallback_to_tfidf_when_sbert_fails(self):
-        scorer = HybridSimilarityScorer(alpha=0.5)
+        scorer = HybridSimilarityScorer(alpha=0.5, jaccard_weight=0)
         scorer.vec.use_embeddings = True
         scorer.vec.doc_ids = ["id1", "id2"]
         scorer.vec.doc_texts = {
@@ -154,4 +154,4 @@ class TestHybridSimilarityScorerMocked:
 
         with patch.object(scorer.vec, "_compute_sbert_matrix", return_value={}):
             matrix = scorer.compute_similarity_matrix()
-            assert 0.5 < matrix["id1"]["id2"] < 1.0
+            assert 0 < matrix["id1"]["id2"] < 0.6

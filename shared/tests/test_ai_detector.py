@@ -56,6 +56,7 @@ def test_roberta_score_no_pipeline():
 def test_perplexity_fallback():
     d = AIContentDetector()
     d._gpt2_model = None
+    d._load_gpt2 = MagicMock()
     ppl, burst = d._perplexity_burstiness("test sentence here")
     assert ppl == 30.0
     assert burst == 0.3
