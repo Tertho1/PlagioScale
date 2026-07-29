@@ -1,3 +1,4 @@
+import importlib.metadata as _im_meta
 import os
 import sys
 import unittest.mock as mock
@@ -35,8 +36,6 @@ sys.modules["shared.database"] = _shared_db
 # mock modules that requirementsall.txt does not include
 # pydantic calls importlib.metadata.version('email-validator') to check the version,
 # so we must patch that too (MagicMock in sys.modules lacks package metadata)
-import importlib.metadata as _im_meta
-
 _orig_version = _im_meta.version
 
 
