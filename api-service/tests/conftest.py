@@ -33,6 +33,21 @@ _shared_db.update_user_role.return_value = None
 sys.modules["shared.database"] = _shared_db
 
 # mock modules that requirementsall.txt does not include
+# pydantic calls importlib.metadata.version('email-validator') to check the version,
+# so we must patch that too (MagicMock in sys.modules lacks package metadata)
+import importlib.metadata as _im_meta
+
+_orig_version = _im_meta.version
+
+
+def _mock_version(name):
+    if name == "email-validator":
+        return "2.0.0"
+    return _orig_version(name)
+
+
+_im_meta.version = _mock_version
+
 for _mod_name in ("bcrypt", "jose", "email_validator"):
     _m = mock.MagicMock()
     _m.__name__ = _mod_name
