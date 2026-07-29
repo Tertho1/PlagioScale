@@ -281,3 +281,45 @@
 | 15.10 | Worker model warmup at startup | 🟠 MEDIUM | Performance | `_warmup_models()` pre-loads DistilGPT2 + SBERT eagerly |
 | 15.11 | Auto-compute on new submission | 🟡 MEDIUM | Feature | Enqueues BATCH_COMPUTE job when submission count ≥ 2 |
 
+---
+
+## Round 16 — Refactoring & Frontend Improvements (Planned 🚧)
+
+> All work on `refactor` branch. `main` is frozen.
+> See `docs/frontend_improvement_report.md` for full analysis. Round 16 addresses items verified against source code in July 2026.
+
+**Legend:** ✅ = Done, 🚧 = In Progress, ❌ = Not Started, 🔜 = Planned
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| **Security** | | | | | |
+| 16.1 | 401 refresh-retry interceptor: wrap fetch calls to call `refreshToken()` on 401 before redirecting | 🟠 MEDIUM | Security | Small | 🔜 |
+| 16.2 | WebSocket auth via `Sec-WebSocket-Protocol` header or short-lived ticket instead of `?token=` query param | 🟠 MEDIUM | Security | Medium | 🔜 |
+| 16.3 | Add `original_filename` field to backend API response to eliminate fragile `split("_").slice(3)` in 4 frontend files | 🟢 LOW | Quality | Small | 🔜 |
+| **Auth / Route Protection** | | | | | |
+| 16.4 | Create shared `<RequireAuth>` and `<RequireRole>` route wrappers; apply to all protected routes in `App.jsx` | 🟠 MEDIUM | Auth | Medium | 🔜 |
+| 16.5 | Add cross-tab auth state sync via `window.addEventListener('storage', ...)` in NavBar | 🟢 LOW | UX | Small | 🔜 |
+| **Data Fetching & UX** | | | | | |
+| 16.6 | Add abort-on-unmount guard (AbortController / cancelledRef) to compute similarity polling loop | 🟠 MEDIUM | Quality | Small | 🔜 |
+| 16.7 | Add rollback on rename failure in Dashboard.jsx (revert optimistic update) | 🟠 MEDIUM | Quality | Small | 🔜 |
+| 16.8 | Make WebSocket primary channel for compute progress, polling only as timeout fallback | 🟢 LOW | UX | Medium | 🔜 |
+| 16.9 | Add skeleton/loading states for matrix and submissions table (currently pop-in) | 🟢 LOW | UX | Small | 🔜 |
+| **Architecture** | | | | | |
+| 16.10 | Remove dead code: `TeacherDashboard.jsx` is unrouted (both `/dashboard` and `/teacher` point to `Dashboard.jsx`) | 🟢 LOW | Quality | Small | 🔜 |
+| 16.11 | Split Dashboard.jsx (~661 lines) into custom hooks: `useAssignments`, `useAssignmentDetails`, `useSimilarityCompute`, `useMatrixViewer` | 🟠 MEDIUM | Quality | Large | 🔜 |
+| 16.12 | Create minimal `AuthContext` (token, email, role) to avoid direct localStorage reads on every render | 🟠 MEDIUM | Architecture | Medium | 🔜 |
+| **WebSocket** | | | | | |
+| 16.13 | Cap WS retry count and surface persistent "live updates unavailable" banner to user | 🟢 LOW | UX | Small | 🔜 |
+| **Components** | | | | | |
+| 16.14 | Add outside-click + Escape handlers and `aria-expanded` to NavBar Tools dropdown | 🟢 LOW | A11y | Small | 🔜 |
+| 16.15 | Add `prefers-color-scheme` media query fallback for dark mode (first-time visitors) | 🟢 LOW | UX | Small | 🔜 |
+| 16.16 | Swap custom focus trap in MatrixViewer for native `<dialog>` element or Radix Dialog | 🟢 LOW | A11y | Small | 🔜 |
+| 16.17 | Use `role="status"` for success/info toasts, keep `role="alert"` only for errors | 🟢 LOW | A11y | Small | 🔜 |
+| **Performance** | | | | | |
+| 16.18 | Route-level code splitting: `React.lazy` + `Suspense` for AdminPage, CollusionGraph | 🟢 LOW | Perf | Small | 🔜 |
+| **Testing** | | | | | |
+| 16.19 | Tests for `useBatchProgress` WebSocket hook (reconnection, backoff, max retries) | 🟠 MEDIUM | Quality | Medium | 🔜 |
+| 16.20 | Tests for auth guard logic (RequireAuth, RequireRole, 401 refresh-retry) | 🟠 MEDIUM | Quality | Medium | 🔜 |
+| **CI / Build** | | | | | |
+| 16.21 | Add missing deps (`bcrypt`, `python-jose[cryptography]`, `email-validator`) to `requirementsall.txt` and remove corresponding conftest mocks | 🟠 MEDIUM | CI | Small | 🔜 |
+

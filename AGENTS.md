@@ -13,6 +13,21 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 - **Monitoring:** Prometheus + Grafana
 - **Auth:** JWT (bcrypt passwords)
 
+## Branch Strategy
+
+| Branch | Purpose | State |
+|---|---|---|
+| `main` | Stable, working, demo-ready product. All tests pass. CI/CD runs. | 🔒 **Frozen** — no direct pushes or PRs |
+| `refactor` | All planned improvements, refactoring, and new work. | 🚧 **Active** — push here after work is done |
+
+**Rule:** `main` is always green. Work only on `refactor`. Merge to `main` only when explicitly discussed and confirmed.
+
+## Commit & Push Rules
+
+- **Never push to GitHub without explicit confirmation from the user.**
+- Before any push, the AI must ask: *"Ready to push to `refactor`?"* and wait for a yes.
+- After push confirmation, push to `refactor` only (never `main`).
+
 ## Key Architecture Decisions
 
 | Decision | Choice |
@@ -70,10 +85,15 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 
 ## Work Rules
 
-- **Never push to GitHub unless explicitly asked.** All work is local unless I say otherwise.
+- **Branch:** All work goes to `refactor` branch. `main` is frozen.
+- **No push without confirmation.** Always ask: *"Ready to push?"* before any `git push`.
+- **Never push to GitHub unless explicitly asked.** All work is local unless the user says otherwise.
+- **Keep `main` green.** The `main` branch must always pass all tests and be demo-ready.
 
-See `TODO.md` for full round-by-round fix plan.
+See `TODO.md` for full round-by-round fix plan and planned improvements.
 See `docs/audit_july2026.md` for comprehensive audit report.
+See `docs/setup_guide.md` for full setup and demo instructions.
+See `docs/frontend-architecture.md` for frontend architecture documentation.
 
 ## Folder Structure
 
@@ -93,7 +113,10 @@ grafana/             # Pre-provisioned dashboards
 
 ## Status
 
-All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
+**`main` branch — stable, demo-ready.**
+All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests ✅ — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
+
+**No active work on `refactor` yet.** See TODO.md → Round 16 for planned improvements.
 
 ## Round 15 — Similarity Compute + AI Detection Stability ✅
 
@@ -106,5 +129,4 @@ All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 fe
 | 15.5 | Meta tensor materialization in `_load_gpt2` | ✅ | Detects meta device, reloads with explicit device |
 | 15.6 | `HF_HUB_DOWNLOAD_TIMEOUT=30` env var | ✅ | Added to worker docker-compose environment |
 | 15.7 | Auth headers on `computeSimilarity` call | ✅ | `getAuthHeaders()` added to POST fetch |
-| 15.8 | Tools navbar dropdown | ✅ | Already present in `main.jsx` — verified
-
+| 15.8 | Tools navbar dropdown | ✅ | Already present in `main.jsx` — verified |
