@@ -2,20 +2,21 @@ import os
 import sys
 import unittest.mock as mock
 
-# Block problematic imports before test collection
-_shared_db = mock.MagicMock()
-_shared_db.get_db_connection.return_value = None
-_shared_db.init_db.return_value = False
-_shared_db.store_job_result.return_value = None
-_shared_db.update_job_status.return_value = None
-_shared_db.get_job_record.return_value = None
-_shared_db.get_submissions_by_batch.return_value = []
-_shared_db.create_user.return_value = None
-_shared_db.get_user.return_value = None
-_shared_db.verify_user.return_value = None
-_shared_db.SimilarityMatrix = mock.MagicMock()
+# Mock modules that main.py imports but may not be installed in CI
+_bcrypt_mock = mock.MagicMock()
+_bcrypt_mock.__name__ = "bcrypt"
+sys.modules["bcrypt"] = _bcrypt_mock
 
-sys.modules['shared.database'] = _shared_db
+_jose_mock = mock.MagicMock()
+_jose_mock.__name__ = "jose"
+sys.modules["jose"] = _jose_mock
+
+# Save original env vars
+_saved_env = {k: os.environ.get(k) for k in ("DB_HOST", "REDIS_HOST", "REDIS_PASSWORD")}
+os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests")
+os.environ.setdefault("DB_HOST", "localhost")
+os.environ.setdefault("REDIS_HOST", "localhost")
+os.environ.setdefault("REDIS_PASSWORD", "plagio_redis_pass")
 
 _api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _api_dir not in sys.path:
