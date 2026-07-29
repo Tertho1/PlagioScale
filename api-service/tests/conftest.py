@@ -52,26 +52,23 @@ for _mod_name in ("bcrypt", "jose", "email_validator"):
     _m.__name__ = _mod_name
     sys.modules[_mod_name] = _m
 
-# mock redis.asyncio to prevent real connections during startup events
-# uses a helper that returns AsyncMock for coroutine methods
-def _make_async_mock():
-    m = mock.MagicMock()
-    m.ping = mock.AsyncMock()
-    m.pubsub = mock.MagicMock()
-    m.get = mock.AsyncMock(return_value=None)
-    m.set = mock.AsyncMock()
-    m.lpush = mock.AsyncMock()
-    m.hset = mock.AsyncMock()
-    m.hgetall = mock.AsyncMock(return_value={})
-    m.delete = mock.AsyncMock()
-    m.expire = mock.AsyncMock()
-    m.subscribe = mock.AsyncMock()
-    m.listen = mock.AsyncMock(return_value=[])
-    return m
+# Mock AsyncQueueClient so no real Redis connections are attempted
+# (AsyncQueueClient._ensure_connection has infinite retry loop)
+_qc_instance = mock.MagicMock()
+_qc_instance._ensure_connection = mock.AsyncMock()
+_qc_instance.connect = mock.AsyncMock()
+_qc_instance.disconnect = mock.AsyncMock()
+_qc_instance.enqueue_job = mock.AsyncMock()
+_qc_instance.dequeue_job = mock.AsyncMock()
+_qc_instance.get_queue_length = mock.AsyncMock(return_value=0)
+_qc_instance.get_job_status = mock.AsyncMock(return_value=None)
+_qc_instance.get_result = mock.AsyncMock(return_value=None)
+_qc_instance.store_result = mock.AsyncMock()
+_qc_instance.update_job_status = mock.AsyncMock()
 
-_redis_asyncio = mock.MagicMock()
-_redis_asyncio.Redis = lambda *a, **kw: _make_async_mock()
-sys.modules["redis.asyncio"] = _redis_asyncio
+_queue_module = mock.MagicMock()
+_queue_module.AsyncQueueClient = mock.MagicMock(return_value=_qc_instance)
+sys.modules["shared.queue_client"] = _queue_module
 
 # set env vars needed by main.py
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests")
