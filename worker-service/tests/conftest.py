@@ -1,6 +1,15 @@
 import os
+import pathlib
 import sys
 import unittest.mock as mock
+
+import prometheus_client as _pc
+
+# prevent module-level mkdir /app/storage in worker.py from failing in CI
+pathlib.Path.mkdir = mock.MagicMock(return_value=None)
+
+# prevent module-level start_http_server(8001) in worker.py from failing in CI
+_pc.start_http_server = mock.MagicMock()
 
 # Block SQLAlchemy import by pre-mocking shared.database
 _shared_db = mock.MagicMock()

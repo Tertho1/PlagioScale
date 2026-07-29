@@ -52,23 +52,10 @@ for _mod_name in ("bcrypt", "jose", "email_validator"):
     _m.__name__ = _mod_name
     sys.modules[_mod_name] = _m
 
-# Mock AsyncQueueClient so no real Redis connections are attempted
-# (AsyncQueueClient._ensure_connection has infinite retry loop)
-_qc_instance = mock.MagicMock()
-_qc_instance._ensure_connection = mock.AsyncMock()
-_qc_instance.connect = mock.AsyncMock()
-_qc_instance.disconnect = mock.AsyncMock()
-_qc_instance.enqueue_job = mock.AsyncMock()
-_qc_instance.dequeue_job = mock.AsyncMock()
-_qc_instance.get_queue_length = mock.AsyncMock(return_value=0)
-_qc_instance.get_job_status = mock.AsyncMock(return_value=None)
-_qc_instance.get_result = mock.AsyncMock(return_value=None)
-_qc_instance.store_result = mock.AsyncMock()
-_qc_instance.update_job_status = mock.AsyncMock()
-
-_queue_module = mock.MagicMock()
-_queue_module.AsyncQueueClient = mock.MagicMock(return_value=_qc_instance)
-sys.modules["shared.queue_client"] = _queue_module
+# Note: shared.queue_client is NOT mocked globally because that would leak
+# into shared/tests/test_queue.py when run in the same session.
+# Instead, test_routes.py patches main.queue_client on the specific tests
+# that need it (test_result_not_found).
 
 # set env vars needed by main.py
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests")

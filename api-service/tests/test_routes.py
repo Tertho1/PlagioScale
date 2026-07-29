@@ -103,7 +103,10 @@ def test_auth_login_no_db():
 
 
 @pytest.mark.integration
-def test_result_not_found():
+@patch("main.queue_client.get_job_status", new_callable=AsyncMock, return_value=None)
+@patch("main.queue_client.get_result", new_callable=AsyncMock, return_value=None)
+@patch("main.queue_client.connect", new_callable=AsyncMock)
+async def test_result_not_found(mock_connect, mock_getresult, mock_getstatus):
     resp = client.get("/result/nonexistent-id")
     assert resp.status_code == 404
 
