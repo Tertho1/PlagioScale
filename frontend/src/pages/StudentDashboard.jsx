@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { getAuthHeaders, getStoredEmail, clearToken } from '../utils/auth'
+import { useNavigate } from 'react-router-dom'
+import { getAuthHeaders } from '../utils/auth'
 import Dropzone from '../components/Dropzone'
 import '../styles/portal.css'
 
@@ -19,18 +19,15 @@ export default function StudentDashboard() {
 
   useEffect(() => {
     fetchMySubmissions()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchMySubmissions() {
     setLoading(true)
     setError('')
     try {
       const headers = await getAuthHeaders()
-      if (!headers.Authorization) {
-        navigate('/auth')
-        return
-      }
-      const res = await fetch(`${API_BASE}/portal/my`, { headers: await getAuthHeaders(), credentials: "include" })
+      if (!headers.Authorization) { navigate('/auth'); return }
+      const res = await fetch(`${API_BASE}/portal/my`, { headers, credentials: "include" })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setBatches(data.batches || [])
@@ -62,7 +59,7 @@ export default function StudentDashboard() {
       const res = await fetch(`${API_BASE}/portal/submit`, {
         method: 'POST',
         credentials: 'include',
-        headers: await getAuthHeaders(),
+        headers,
         body: fd,
       })
       if (!res.ok) throw new Error(await res.text())

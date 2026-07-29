@@ -21,7 +21,7 @@ export default function StudentComparison() {
           const data = await res.json();
           setDetails(data);
         }
-      } catch {}
+      } catch { /* ignore fetch errors */ }
       setLoading(false);
     })();
   }, [submissionId]);

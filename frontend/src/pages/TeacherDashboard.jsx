@@ -3,22 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import SimilarityMatrix from "../components/SimilarityMatrix";
 import MatrixViewer from "../components/MatrixViewer";
 import "../styles/portal.css";
-import { clearToken, getAuthHeaders, getToken, getStoredEmail } from "../utils/auth";
+import { getAuthHeaders, getToken, getStoredEmail } from "../utils/auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
-
-function generateMockMatrix(n) {
-  const m = Array.from({ length: n }, () => Array.from({ length: n }, () => 0));
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const v = Math.random() * 0.9;
-      m[i][j] = v;
-      m[j][i] = v;
-    }
-    m[i][i] = 0;
-  }
-  return m;
-}
 
 export default function TeacherDashboard() {
   const navigate = useNavigate();
@@ -79,7 +66,7 @@ export default function TeacherDashboard() {
         try {
           const d = JSON.parse(ev.data);
           setProgress(d);
-        } catch (e) {}
+        } catch (e) { /* ignore ws parse error */ }
       };
       wsRef.current = ws;
       return () => ws.close();

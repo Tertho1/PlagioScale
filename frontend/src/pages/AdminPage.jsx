@@ -33,11 +33,11 @@ export default function AdminPage() {
       loadStats();
       loadUsers();
     })();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (tab === "users") loadUsers();
-  }, [page, search, tab]);
+  }, [page, search, tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (tab !== "audit") return;

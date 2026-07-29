@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import AuthPage from './pages/AuthPage'
 import Dashboard from './pages/Dashboard'
 import StudentSubmit from './pages/StudentSubmit'
@@ -20,7 +20,6 @@ const TOOLS = [
 ]
 
 function NavBar(){
-  const location = useLocation()
   const token = getToken()
   const email = getStoredEmail()
   const [showTools, setShowTools] = useState(false)

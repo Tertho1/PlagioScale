@@ -1,3 +1,4 @@
+import PropTypes from "prop-types";
 import { useCallback, useEffect, useState } from 'react'
 import '../styles/portal.css'
 
@@ -47,3 +48,11 @@ function ToastItem({ id, message, type, duration, onDone }) {
     </div>
   )
 }
+
+ToastItem.propTypes = {
+  id: PropTypes.number.isRequired,
+  message: PropTypes.string.isRequired,
+  type: PropTypes.string,
+  duration: PropTypes.number,
+  onDone: PropTypes.func.isRequired,
+};

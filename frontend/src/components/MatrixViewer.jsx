@@ -1,3 +1,4 @@
+import PropTypes from "prop-types";
 import React, { useCallback, useEffect, useRef } from 'react'
 import { getAuthHeaders } from '../utils/auth'
 import { showToast } from './Toast'
@@ -104,3 +105,12 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
     </div>
   )
 }
+
+MatrixViewer.propTypes = {
+  open: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  leftSubmission: PropTypes.object,
+  rightSubmission: PropTypes.object,
+  similarity: PropTypes.number,
+  batchId: PropTypes.string,
+};

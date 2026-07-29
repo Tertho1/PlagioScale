@@ -1,3 +1,4 @@
+import PropTypes from "prop-types";
 import React, { useCallback } from 'react'
 import './SimilarityMatrix.css'
 
@@ -59,9 +60,23 @@ export default function SimilarityMatrix({matrix, labels, onCellClick, maxDispla
   )
 }
 
+SimilarityMatrix.propTypes = {
+  matrix: PropTypes.arrayOf(PropTypes.arrayOf(PropTypes.number)),
+  labels: PropTypes.arrayOf(PropTypes.string),
+  onCellClick: PropTypes.func,
+  maxDisplay: PropTypes.number,
+};
+
 function SimilarityMatrixPreview({matrix, labels, onCellClick, previewSize=60}){
   const n = Math.min(previewSize, matrix.length)
   const sub = matrix.slice(0,n).map(r=>r.slice(0,n))
   const labs = labels ? labels.slice(0,n) : Array.from({length:n}, (_,i)=>`S${i+1}`)
   return <SimilarityMatrix matrix={sub} labels={labs} onCellClick={onCellClick} maxDisplay={n} />
 }
+
+SimilarityMatrixPreview.propTypes = {
+  matrix: PropTypes.arrayOf(PropTypes.arrayOf(PropTypes.number)),
+  labels: PropTypes.arrayOf(PropTypes.string),
+  onCellClick: PropTypes.func,
+  previewSize: PropTypes.number,
+};

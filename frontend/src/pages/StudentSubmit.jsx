@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+
 import Dropzone from '../components/Dropzone'
-import { getToken } from '../utils/auth'
+
 import '../styles/portal.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
@@ -22,7 +22,7 @@ export default function StudentSubmit(){
       if (saved.name) setName(saved.name)
       if (saved.email) setEmail(saved.email)
       if (saved.roll) setRoll(saved.roll)
-    } catch {}
+    } catch { /* ignore localStorage errors */ }
   }, [])
 
   async function handleSubmit(e){
@@ -46,7 +46,7 @@ export default function StudentSubmit(){
 
     try {
       localStorage.setItem(STUDENT_PROFILE_KEY, JSON.stringify({ name, email, roll }))
-    } catch {}
+    } catch { /* ignore localStorage errors */ }
 
     setStatus('Uploading...')
     setIsUploading(true)
@@ -61,8 +61,6 @@ export default function StudentSubmit(){
       setIsUploading(false)
     }
   }
-
-  const token = getToken()
 
   return (
     <div className="page-shell">

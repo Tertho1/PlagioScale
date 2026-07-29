@@ -1,3 +1,4 @@
+import PropTypes from "prop-types";
 import { useCallback, useState } from 'react'
 import '../styles/portal.css'
 
@@ -29,3 +30,7 @@ export default function Dropzone({onFile}){
     </div>
   )
 }
+
+Dropzone.propTypes = {
+  onFile: PropTypes.func.isRequired,
+};

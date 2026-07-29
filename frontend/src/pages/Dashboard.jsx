@@ -1,5 +1,6 @@
+import PropTypes from "prop-types";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { clearToken, getAuthHeaders, getStoredEmail, getToken, isTokenExpired } from "../utils/auth";
 import { useBatchProgress } from "../utils/websocket";
 import BlindReviewToggle from "../components/BlindReviewToggle";
@@ -45,6 +46,20 @@ function AssignmentCard({ item, active, onClick }) {
   );
 }
 
+const assignmentItemShape = PropTypes.shape({
+  name: PropTypes.string,
+  batch_id: PropTypes.string,
+  expected_count: PropTypes.number,
+  created_at: PropTypes.string,
+  owner_user_id: PropTypes.string,
+});
+
+AssignmentCard.propTypes = {
+  item: assignmentItemShape.isRequired,
+  active: PropTypes.bool,
+  onClick: PropTypes.func.isRequired,
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -89,7 +104,7 @@ export default function Dashboard() {
       shared: sharedAssignments.length,
       submissions: submissions.length,
     };
-  }, [ownedAssignments.length, sharedAssignments.length, submissions.length]);
+  }, [ownedAssignments, sharedAssignments, submissions]);
 
   useEffect(() => {
     if (wsProgress.processed > 0 && selected) {
@@ -323,9 +338,6 @@ export default function Dashboard() {
     const leftLabel = displayLabels[rowIdx];
     const rightLabel = displayLabels[colIdx];
 
-    let leftText = "";
-    let rightText = "";
-
     const leftSub = submissions.find(s => s.submission_id === leftId);
     const rightSub = submissions.find(s => s.submission_id === rightId);
 
@@ -366,7 +378,7 @@ export default function Dashboard() {
       },
       similarity: cellValue,
     });
-  }, [matrixIds, labels, selectedId]);
+  }, [matrixIds, displayLabels, selectedId, submissions]);
 
   useEffect(() => {
     if (!token) {

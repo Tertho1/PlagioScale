@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { clearToken, getStoredEmail, getToken, setToken } from "../utils/auth";
 import "../styles/portal.css";
 
@@ -16,7 +16,7 @@ export default function AuthPage() {
 
   useEffect(() => {
     if (getToken()) navigate("/dashboard");
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const title = useMemo(
     () => (mode === "login" ? "Sign in to your account" : "Create an account"),
