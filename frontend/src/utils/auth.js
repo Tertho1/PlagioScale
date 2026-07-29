@@ -70,16 +70,25 @@ export async function refreshToken() {
 
   refreshPromise = (async () => {
     try {
+      const token = getToken();
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       if (!res.ok) {
         clearToken();
         return null;
       }
-      return true;
+      const data = await res.json();
+      const newToken = data.access_token || null;
+      if (newToken) {
+        setToken(newToken);
+      }
+      return newToken;
     } catch {
       return null;
     }

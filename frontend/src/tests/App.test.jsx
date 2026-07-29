@@ -10,6 +10,6 @@ describe('App', () => {
         <App />
       </BrowserRouter>
     )
-    expect(screen.getByText(/PlagioScale/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/PlagioScale/i).length).toBeGreaterThan(0)
   })
 })

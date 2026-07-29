@@ -3,16 +3,25 @@
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 
-AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "/app/logs/audit.log")
+AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "")
 
 _audit_logger = logging.getLogger("plagioscale.audit")
 _audit_logger.setLevel(logging.INFO)
 _audit_logger.propagate = False
 
 if not _audit_logger.handlers:
-    os.makedirs(os.path.dirname(AUDIT_LOG_PATH), exist_ok=True)
+    log_dir = os.path.dirname(AUDIT_LOG_PATH) if AUDIT_LOG_PATH else ""
+    if log_dir:
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except (OSError, PermissionError):
+            log_dir = ""
+    if not log_dir:
+        log_dir = tempfile.mkdtemp(prefix="plagioscale_audit_")
+        AUDIT_LOG_PATH = os.path.join(log_dir, "audit.log")
     handler = logging.FileHandler(AUDIT_LOG_PATH)
     handler.setFormatter(logging.Formatter("%(message)s"))
     _audit_logger.addHandler(handler)
