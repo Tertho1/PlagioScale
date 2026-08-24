@@ -32,9 +32,19 @@ except ImportError:
     logger.warning("fpdf2 not available — trying reportlab")
 
 
+def _escape_xml(text: str) -> str:
+    """Escape XML special characters so text is safe for Paragraph markup."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _highlight_diff_words(text_a: str, text_b: str) -> Tuple[List[str], List[str]]:
-    words_a = text_a.split()
-    words_b = text_b.split()
+    words_a = _escape_xml(text_a).split()
+    words_b = _escape_xml(text_b).split()
     set_b = set(words_b)
     set_a = set(words_a)
     highlighted_a = []
@@ -93,7 +103,7 @@ def _generate_reportlab(
     hl_style = ParagraphStyle("Highlighted", parent=styles["Normal"], textColor=colors.red)
 
     elements = []
-    elements.append(Paragraph(f"Plagiarism Report — {batch_name}", styles["Title"]))
+    elements.append(Paragraph(f"Plagiarism Report — {_escape_xml(batch_name)}", styles["Title"]))
     elements.append(Spacer(1, 12))
     elements.append(
         Paragraph(
@@ -105,8 +115,8 @@ def _generate_reportlab(
 
     info_data = [
         ["", "Submission A", "Submission B"],
-        ["Roll", sub_a.get("roll", "—"), sub_b.get("roll", "—")],
-        ["Name", sub_a.get("name", "—"), sub_b.get("name", "—")],
+        ["Roll", _escape_xml(sub_a.get("roll", "—")), _escape_xml(sub_b.get("roll", "—"))],
+        ["Name", _escape_xml(sub_a.get("name", "—")), _escape_xml(sub_b.get("name", "—"))],
     ]
     if ai_a is not None or ai_b is not None:
         info_data.append([
@@ -168,10 +178,10 @@ def _generate_fpdf2(
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "Text Comparison", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
-    words_a_hl, _ = _highlight_diff_words(text_a, text_b)
+    words_a_hl, words_b_hl = _highlight_diff_words(text_a, text_b)
     pdf.multi_cell(0, 5, " ".join(words_a_hl))
     pdf.ln(6)
-    pdf.multi_cell(0, 5, " ".join(words_a_hl))
+    pdf.multi_cell(0, 5, " ".join(words_b_hl))
 
     if output_path:
         pdf.output(output_path)

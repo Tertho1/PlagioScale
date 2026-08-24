@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { API_BASE } from "../utils/config";
 import { clearToken, getStoredEmail, getToken, setToken } from "../utils/auth";
 import "../styles/portal.css";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export default function AuthPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState(getStoredEmail());
   const [name, setName] = useState("");
+  const [roll, setRoll] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,7 +49,7 @@ export default function AuthPage() {
       const endpoint = mode === "login" ? "/auth/login" : "/auth/signup";
       const payload = mode === "login"
         ? { email, password }
-        : { email, name, password };
+        : { email, name, roll: roll.trim() || null, password };
 
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: "POST",
@@ -110,6 +110,21 @@ export default function AuthPage() {
                   placeholder="Your name"
                   autoComplete="name"
                 />
+              </div>
+            )}
+
+            {mode === "signup" && (
+              <div className="field">
+                <label>Roll Number (optional)</label>
+                <input
+                  value={roll}
+                  onChange={(event) => setRoll(event.target.value)}
+                  placeholder="e.g. 22045"
+                  autoComplete="off"
+                />
+                <div className="field-help">
+                  Required for students submitting assignments. Teachers can skip this.
+                </div>
               </div>
             )}
 

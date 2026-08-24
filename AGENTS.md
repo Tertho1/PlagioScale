@@ -67,6 +67,19 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | Dead-letter consumer | `_drain_dead_letter()` runs every 60s — re-queues jobs under max retries, logs exhausted ones (Self-Healing) |
 | Alertmanager webhook | `prometheus/alertmanager.yml` + `prometheus/alerts.yml` + `/api/webhooks/alertmanager` endpoint with auto-remediation counters (Self-Healing) |
 | CI/CD | Build-and-push to GHCR on push to `main` — 5 images built via matrix (api, worker, autoscaler, monitoring, frontend), tagged with commit SHA + `latest`, pushed to `ghcr.io/{owner}/plagioscale-{service}`. Deploy via `IMAGE_OWNER=x IMAGE_TAG=latest bash scripts/deploy.sh`. `docker-compose.yml` has `image:` alongside `build:` — set env vars to pull pre-built images. (Round 14) |
+| Frontend API_BASE | Single source in `frontend/src/utils/config.js` — imported everywhere (Round 19) |
+| Error boundaries | Global `ErrorBoundary` wraps all routes in App.jsx (Round 19) |
+| CollusionGraph | Lazy-loaded via React.lazy + Suspense — own 188KB chunk, not in Dashboard bundle (Round 19) |
+| DB engine pooling | `pool_size=10, max_overflow=20, pool_timeout=30, pool_recycle=1800` on create_engine (Round 19) |
+| Redis enqueue | Atomic via `pipeline()` in both sync and async queue clients (Round 19) |
+| Dead letter payloads | Original job JSON stored in `dead_letter:{job_id}` hash for recovery (Round 19) |
+| SMTP batching | `send_bulk_emails()` reuses one connection; `smtp_connection()` context manager (Round 19) |
+| Role hierarchy | `user(0) < teacher(1) < admin(2)` — unknown roles fail every check; admins pass teacher-level checks (Round 20) |
+| CSRF tokens | Stateless HMAC: `HMAC(CSRF_SECRET, user_id)` + double-submit cookie; constant-time compare (Round 20) |
+| AI detect timeout | `detect(text, timeout=120)` via ThreadPoolExecutor → -1.0 on expiry; thread-safe singleton with double-checked locking (Round 20) |
+| Worker notifications | Fire-and-forget daemon threads — never block the processing loop (Round 20) |
+| API field hygiene | `_public_submission()` strips file_path/embedding_json from all submission responses (Round 20) |
+| File cleanup | `delete_assignment` removes uploaded files from disk after DB commit (Round 20) |
 
 ## Known Bugs (audit July 2026) — All Fixed ✅
 
@@ -116,7 +129,57 @@ grafana/             # Pre-provisioned dashboards
 **`main` branch — stable, demo-ready.**
 All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests ✅ — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
 
-**No active work on `refactor` yet.** See TODO.md → Round 16 for planned improvements.
+**`refactor` branch — active.** Round 16 complete (29 items) ✅ — Round 17 security audit complete (14/14 done) ✅ — Round 18 complete (11 items) ✅ — Round 19 complete (29 items) ✅ — Round 20 complete (23 items) ✅ — 160 tests ✅.
+
+## Round 16 — Refactoring & Frontend Improvements ✅ (on `refactor`)
+
+29 items completed. Key changes:
+- **Bug fixes:** PDF report button, SSE audit tail auth, deleted dead TeacherDashboard
+- **Security:** 401 refresh-retry interceptor (`authFetch`), route guards (`RequireAuth`/`RequireRole`), `AuthContext`
+- **Architecture:** Native `<dialog>` for MatrixViewer, React.lazy code splitting, cross-tab auth sync
+- **UX:** Skeleton loading states, WS retry cap + banner, dark mode prefers-color-scheme, toast roles, file validation
+- **Backend:** `original_filename` field to eliminate fragile filename parsing
+
+## Round 17 — Security Audit Remediation ✅ (on `refactor`)
+
+Security audit found 18 issues (3 CRITICAL, 5 HIGH, 8 MEDIUM, 2 LOW). All 14 actionable items completed:
+- **CRITICAL:** Ownership checks on all mutation endpoints, list_assignments filtered to owned+shared, access codes hidden from non-owners
+- **HIGH:** Ownership on cross-batch/student-comparison/report-download, roll-to-user identification at signup+submit
+- **MEDIUM:** CSRF enabled on all state-changing endpoints, WORKER_SECRET required, debug endpoint gated
+- **Deferred:** Dashboard hook split ✅, WS/auth-guard tests ✅, missing deps ✅
+
+## Round 19 — Bug Fixes, Security Hardening & Performance ✅ (28/29 done)
+
+29 items planned from a full-stack audit; 28 done, 1 deferred. Key changes:
+- **Critical bugs:** `download_report` NameError fixed, CSRF on `portal_submit`, auth bypass when DB down → 503, dead-letter payload preserved in Redis, PDF report text-B copy-paste bug
+- **Security:** JWT query-param auth removed, password strength (8+ chars + digit + special), WebSocket batch-ownership check, `/submit` requires auth, admin role change CSRF+rate-limit+audit, SQL wildcard escaping in user search
+- **Performance:** SBERT batch encoding (10-50x), vectorized cosine matrix, atomic Redis pipeline enqueue, N+1 cross-batch query → single `.in_()` query, DB pool sizing (10/20/30s/1800s), lazy RoBERTa load, pre-computed jaccard n-grams, module-level torch threads
+- **Frontend:** ErrorBoundary (no more white screens), shared `utils/config.js` API_BASE, lazy-loaded CollusionGraph (Dashboard bundle 223KB → 36KB), error toasts replacing silent catches, MatrixViewer loading state, admin role-change confirmation
+- **Backend quality:** Pydantic `CreateAssignmentRequest`, IntegrityError → friendly signup message, SMTP connection reuse (`send_bulk_emails`), PDF XML escaping
+
+## Round 20 — Security Depth, Worker Reliability & Frontend Polish ✅ (23/23 done)
+
+23 items completed. Key changes:
+- **Security:** role hierarchy (`user<teacher<admin`, unknown roles fail — fixes M7 no-op bypass), HMAC session-bound CSRF tokens with constant-time compare, signup enumeration eliminated (generic error + DB constraint as truth), CORS methods/headers restricted, `samesite=strict` auth cookie
+- **Data integrity:** `delete_assignment` now removes uploaded files from disk + deletes submission rows; API responses strip `file_path`/`embedding_json` via `_public_submission()`; `store_similarity_results` verified already atomic
+- **Worker:** AI detection skips already-scored submissions on retry, `_notify` is fire-and-forget daemon thread (no more 2s blocks), main loop logs full tracebacks
+- **AI detector:** `detect(text, timeout=120)` runs in ThreadPoolExecutor → -1.0 on timeout; thread-safe singleton (instance lock + load lock)
+- **Frontend:** React.memo on AssignmentCard/BatchAnalytics/ScoreLegend + memoized histograms; AdminPage search debounce + AbortController; dead `/teacher` route removed; navbar auth-aware links; matrix arrow-key navigation; assignment search filter; submissions pagination (25/page); CSV export button; `<Link>` instead of `<a>`; NavBar dropdown styles moved to CSS classes
+
+## Round 18 — Feature Additions ✅ (11 items)
+
+11 items planned, 11 done. See TODO.md for full list. Key items done:
+- **18.1:** Color-coded severity bands (5-band legend, matrix cells, score badges on submissions)
+- **18.2:** Threshold filter on similarity matrix (slider 0–80%, dimmed cells below threshold)
+- **18.3:** In-document highlighted matches (client-side n-gram matching in MatrixViewer)
+- **18.4:** AI detection confidence caveats (tooltip labels for human/assisted/AI-generated)
+- **18.5:** Student draft self-check (`/portal/self-check` endpoint + pre-check button)
+- **18.6:** Assignment settings (allow_resubmission, max_submissions, due_date in detail cards)
+- **18.7:** Side-by-side source comparison (MatrixViewer with highlighted common text)
+- **18.8:** Per-batch analytics (stat cards + similarity/AI distribution bar charts)
+- **18.9:** Empty states with icons, titles, and guidance across Dashboard
+- **18.10:** Sticky headers on StudentDashboard submission table
+- **18.11:** Instructor annotation layer (DB + API + MatrixViewer annotation UI)
 
 ## Round 15 — Similarity Compute + AI Detection Stability ✅
 

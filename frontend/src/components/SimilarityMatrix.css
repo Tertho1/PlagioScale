@@ -44,7 +44,7 @@
 	cursor: pointer;
 	border-radius: 9px;
 	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55);
-	transition: transform 0.15s ease, filter 0.15s ease;
+	transition: transform 0.15s ease, filter 0.15s ease, opacity 0.2s ease;
 }
 
 .smatrix-cell:hover {
@@ -52,6 +52,38 @@
 	filter: saturate(1.08);
 }
 
+.smatrix-cell-dimmed {
+	cursor: default;
+	pointer-events: none;
+}
+
 .smatrix-corner {
 	width: 60px;
+}
+
+.smatrix-legend {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 10px;
+	font-size: 12px;
+	color: #475569;
+}
+
+.smatrix-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.smatrix-legend-swatch {
+	width: 14px;
+	height: 14px;
+	border-radius: 4px;
+	border: 1px solid rgba(0,0,0,0.1);
+	flex-shrink: 0;
+}
+
+.smatrix-legend-label {
+	white-space: nowrap;
 }

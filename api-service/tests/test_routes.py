@@ -18,6 +18,12 @@ import main  # noqa: E402, F401
 client = TestClient(main.app)
 
 
+def _auth_headers():
+    """Generate valid auth headers for tests."""
+    token = main.create_access_token("test-user-id", token_version=0)
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.mark.integration
 def test_health():
     resp = client.get("/health")
@@ -34,24 +40,30 @@ def test_metrics_endpoint():
 @pytest.mark.integration
 @patch("main.queue_client.enqueue_job", new_callable=AsyncMock)
 @patch("main.queue_client.connect", new_callable=AsyncMock)
-async def test_submit_text_empty(mock_connect, mock_enqueue):
-    resp = client.post("/submit", json={"text": ""})
+@patch("main.get_user_by_id", return_value={"user_id": "test-user-id", "role": "user", "token_version": 0})
+@patch("main.db_ready", True)
+def test_submit_text_empty(mock_user, mock_connect, mock_enqueue):
+    resp = client.post("/submit", json={"text": "", }, headers=_auth_headers())
     assert resp.status_code == 400
 
 
 @pytest.mark.integration
 @patch("main.queue_client.enqueue_job", new_callable=AsyncMock)
 @patch("main.queue_client.connect", new_callable=AsyncMock)
-async def test_submit_text_short(mock_connect, mock_enqueue):
-    resp = client.post("/submit", json={"text": "short"})
+@patch("main.get_user_by_id", return_value={"user_id": "test-user-id", "role": "user", "token_version": 0})
+@patch("main.db_ready", True)
+def test_submit_text_short(mock_user, mock_connect, mock_enqueue):
+    resp = client.post("/submit", json={"text": "short"}, headers=_auth_headers())
     assert resp.status_code == 400
 
 
 @pytest.mark.integration
 @patch("main.queue_client.enqueue_job", new_callable=AsyncMock, return_value=True)
 @patch("main.queue_client.connect", new_callable=AsyncMock)
-async def test_submit_text_success(mock_connect, mock_enqueue):
-    resp = client.post("/submit", json={"text": "This is a long enough text for submission testing purposes"})
+@patch("main.get_user_by_id", return_value={"user_id": "test-user-id", "role": "user", "token_version": 0})
+@patch("main.db_ready", True)
+def test_submit_text_success(mock_user, mock_connect, mock_enqueue):
+    resp = client.post("/submit", json={"text": "This is a long enough text for submission testing purposes"}, headers=_auth_headers())
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "submitted"
@@ -61,8 +73,10 @@ async def test_submit_text_success(mock_connect, mock_enqueue):
 @pytest.mark.integration
 @patch("main.queue_client.enqueue_job", new_callable=AsyncMock, return_value=False)
 @patch("main.queue_client.connect", new_callable=AsyncMock)
-async def test_submit_text_queue_failure(mock_connect, mock_enqueue):
-    resp = client.post("/submit", json={"text": "This is a long enough text for submission testing purposes"})
+@patch("main.get_user_by_id", return_value={"user_id": "test-user-id", "role": "user", "token_version": 0})
+@patch("main.db_ready", True)
+def test_submit_text_queue_failure(mock_user, mock_connect, mock_enqueue):
+    resp = client.post("/submit", json={"text": "This is a long enough text for submission testing purposes"}, headers=_auth_headers())
     assert resp.status_code == 500
 
 
@@ -88,9 +102,18 @@ async def test_get_status(mock_connect, mock_getstatus):
 def test_auth_signup_no_db():
     resp = client.post(
         "/auth/signup",
-        json={"email": "test@example.com", "password": "pass123"},
+        json={"email": "test@example.com", "password": "pass123!"},
     )
     assert resp.status_code == 500
+
+
+@pytest.mark.integration
+def test_auth_signup_weak_password():
+    resp = client.post(
+        "/auth/signup",
+        json={"email": "test@example.com", "password": "short"},
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.integration

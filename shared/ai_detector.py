@@ -9,12 +9,21 @@ Phase 2 architecture:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
 import re
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Limit torch to a single thread once at module load (global setting, not per-call)
+try:
+    import torch as _torch
+    _torch.set_num_threads(1)
+except ImportError:
+    _torch = None
 
 _ROBERTA_MODEL = "Hello-SimpleAI/chatgpt-detector-roberta"
 _GPT2_MODEL = "distilgpt2"
@@ -67,18 +76,32 @@ class AIContentDetector:
     """
 
     _instance: Optional["AIContentDetector"] = None
+    _instance_lock = threading.Lock()
 
     def __new__(cls) -> "AIContentDetector":
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._roberta_pipeline = None
-            cls._instance._gpt2_tokenizer = None
-            cls._instance._gpt2_model = None
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._roberta_pipeline = None
+                cls._instance._gpt2_tokenizer = None
+                cls._instance._gpt2_model = None
+                cls._instance._loaded = False
+                cls._instance._load_lock = threading.Lock()
         return cls._instance
 
     def __init__(self) -> None:
-        if self._roberta_pipeline is not None:
+        pass
+
+    def _ensure_loaded(self) -> None:
+        """Lazy-load models on first use instead of at instantiation time."""
+        if self._loaded:
             return
+        with self._load_lock:
+            if self._loaded:
+                return
+            self._load_models()
+
+    def _load_models(self) -> None:
         try:
             from transformers import pipeline
 
@@ -96,6 +119,8 @@ class AIContentDetector:
         except Exception as exc:
             logger.warning("RoBERTa detector failed to load: %s", exc)
             self._roberta_pipeline = None
+        finally:
+            self._loaded = True
 
     def _load_gpt2(self) -> None:
         """Lazy-load DistilGPT2 for perplexity scoring."""
@@ -138,39 +163,54 @@ class AIContentDetector:
     def available(self) -> bool:
         return self._roberta_pipeline is not None
 
-    def detect(self, text: str) -> float:
+    def detect(self, text: str, timeout: float = 120.0) -> float:
         """Run composite AI detection on text.
 
         Returns score in [0, 1]:
           0.0  → confidently human
           1.0  → confidently AI
-         -1.0  → detection unavailable
+         -1.0  → detection unavailable or timed out
+
+        Args:
+            timeout: max seconds for the whole detection; on expiry returns -1.0.
         """
         if not text or not text.strip():
             return 0.0
+        if self._roberta_pipeline is None:
+            self._ensure_loaded()
         if not self.available:
             return -1.0
 
         try:
-            r_score = self._roberta_score(text)
-            ppl, burst = self._perplexity_burstiness(text)
-            stylo = self._stylometric_features(text)
-
-            ppl_score = self._normalize_ppl(ppl)
-            burst_score = self._normalize_burst(burst)
-            secondary_score = 0.7 * ppl_score + 0.3 * burst_score
-
-            stylo_score = self._normalize_stylometric(stylo)
-
-            composite = (
-                _W_ROBERTA * r_score
-                + _W_PPL_BURST * secondary_score
-                + _W_STYLO * stylo_score
-            )
-            return round(max(0.0, min(1.0, composite)), 4)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._detect_composite, text)
+                return round(
+                    max(0.0, min(1.0, future.result(timeout=timeout))), 4
+                )
+        except concurrent.futures.TimeoutError:
+            logger.warning("AI detection timed out after %.0fs", timeout)
+            return -1.0
         except Exception as exc:
             logger.warning("AI detection failed: %s", exc)
             return -1.0
+
+    def _detect_composite(self, text: str) -> float:
+        r_score = self._roberta_score(text)
+        ppl, burst = self._perplexity_burstiness(text)
+        stylo = self._stylometric_features(text)
+
+        ppl_score = self._normalize_ppl(ppl)
+        burst_score = self._normalize_burst(burst)
+        secondary_score = 0.7 * ppl_score + 0.3 * burst_score
+
+        stylo_score = self._normalize_stylometric(stylo)
+
+        composite = (
+            _W_ROBERTA * r_score
+            + _W_PPL_BURST * secondary_score
+            + _W_STYLO * stylo_score
+        )
+        return max(0.0, min(1.0, composite))
 
     # ---- Primary: RoBERTa ----
 
@@ -212,8 +252,6 @@ class AIContentDetector:
 
     def _perplexity_of(self, text: str) -> float:
         import torch
-
-        torch.set_num_threads(1)
 
         try:
             inputs = self._gpt2_tokenizer(

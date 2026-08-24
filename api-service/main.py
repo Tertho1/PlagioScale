@@ -2,6 +2,8 @@
 
 import asyncio
 import csv
+import hashlib
+import hmac as _hmac
 import io
 import json
 import logging
@@ -21,7 +23,6 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
-    Query,
     Request,
     Response,
     UploadFile,
@@ -31,7 +32,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import Counter, Gauge, make_asgi_app
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 
@@ -80,7 +81,7 @@ from shared.external_lookup import search_external_sources
 from shared.models import Job, JobStatus
 from shared.pdf_report import generate_similarity_report_pdf
 from shared.queue_client import AsyncQueueClient
-from shared.text_extraction import extract_text
+from shared.text_extraction import extract_text, extract_text_from_bytes
 from shared.vectorizer import TextVectorizer
 
 # Websocket connections per batch (kept in-memory for active sockets)
@@ -258,8 +259,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
 
 # Prometheus metrics
@@ -306,12 +307,24 @@ class ResultResponse(BaseModel):
 class SignupRequest(BaseModel):
     email: EmailStr
     name: str | None = None
+    roll: str | None = None
     password: str
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class CreateAssignmentRequest(BaseModel):
+    name: str = Field(default="Assignment", min_length=1, max_length=200)
+    expected_count: int = Field(default=0, ge=0)
+    similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    due_date: str | None = None
+    allowed_file_types: str = ".pdf,.docx,.txt"
+    allow_anonymous: bool = True
+    allow_resubmission: bool = True
+    max_submissions: int = Field(default=0, ge=0)
 
 
 class TokenResponse(BaseModel):
@@ -354,8 +367,15 @@ def create_access_token(subject: str, token_version: int = 0) -> str:
     return token
 
 
-def generate_csrf_token() -> str:
-    return str(uuid.uuid4())
+def generate_csrf_token(user_id: str) -> str:
+    """Stateless CSRF token bound to the session: HMAC(CSRF_SECRET, user_id).
+
+    An attacker who can read the token (XSS) still cannot forge one for a
+    different user, and tokens rotate automatically with login/logout.
+    """
+    return _hmac.new(
+        CSRF_SECRET.encode(), f"csrf:{user_id}".encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def set_auth_cookie(response: Response, token: str) -> None:
@@ -364,7 +384,7 @@ def set_auth_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite="strict",
         max_age=JWT_EXPIRE_MINUTES * 60,
         domain=COOKIE_DOMAIN,
         path="/",
@@ -408,9 +428,8 @@ def decode_access_token(token: str) -> _Optional[str]:
 def get_current_user(
     authorization: str | None = Header(default=None),
     access_token: str | None = Cookie(default=None),
-    token_param: str | None = Query(default=None, alias="token"),
 ) -> dict:
-    """Resolve the current user from a Bearer JWT, httpOnly cookie, or query param.
+    """Resolve the current user from a Bearer JWT or httpOnly cookie.
 
     If a token source decodes successfully it is used; otherwise the next source
     is tried. This prevents a stale localStorage token from blocking the httpOnly
@@ -423,8 +442,6 @@ def get_current_user(
             candidates.append(authorization[len(prefix):].strip())
     if access_token:
         candidates.append(access_token)
-    if token_param:
-        candidates.append(token_param)
 
     if not candidates:
         raise HTTPException(status_code=401, detail="Missing authorization")
@@ -441,7 +458,10 @@ def get_current_user(
     if not token or not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}
+    if not db_ready:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable — database offline")
+
+    user = get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -461,21 +481,104 @@ def get_current_user(
     return user
 
 
-def require_csrf(x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"), csrf_token: str | None = Cookie(default=None)) -> None:
-    """Validate CSRF token for state-changing requests (applies to cookie-auth only)."""
+def require_csrf(
+    request: Request,
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+    csrf_token: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Validate CSRF token for state-changing requests.
+
+    The token must equal HMAC(CSRF_SECRET, user_id) derived from the caller's
+    JWT — binding it to the session — and match the csrf_token cookie
+    (double-submit pattern).
+    """
     if not x_csrf_token or not csrf_token:
         raise HTTPException(status_code=403, detail="CSRF token required")
-    if x_csrf_token != csrf_token:
+
+    jwt_src = None
+    auth = authorization or ""
+    if auth.startswith("Bearer "):
+        jwt_src = auth[len("Bearer "):].strip()
+    if not jwt_src:
+        jwt_src = request.cookies.get("access_token")
+    if not jwt_src:
+        raise HTTPException(status_code=403, detail="CSRF validation failed — no session")
+
+    try:
+        payload = jwt.decode(jwt_src, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        subject = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=403, detail="CSRF validation failed — invalid session")
+    if not subject:
+        raise HTTPException(status_code=403, detail="CSRF validation failed — invalid session")
+
+    expected = generate_csrf_token(subject)
+    if (
+        not _hmac.compare_digest(x_csrf_token.encode(), csrf_token.encode())
+        or not _hmac.compare_digest(x_csrf_token.encode(), expected.encode())
+    ):
         raise HTTPException(status_code=403, detail="CSRF token mismatch")
 
 
+_ROLE_RANK = {"user": 0, "teacher": 1, "admin": 2}
+
+
 def require_role(required_role: str):
-    """Dependency factory: require a specific role to access an endpoint."""
+    """Dependency factory: require at least a given role (hierarchy: user < teacher < admin).
+
+    Users with an unknown or missing role fail every check.
+    """
+    required_rank = _ROLE_RANK.get(required_role)
+    if required_rank is None:
+        raise RuntimeError(f"Unknown role in require_role: {required_role}")
+
     def role_checker(current_user: dict = Depends(get_current_user)):
-        if current_user.get("role") != required_role and required_role != "user":
+        user_rank = _ROLE_RANK.get(current_user.get("role"), -1)
+        if user_rank < required_rank:
             raise HTTPException(status_code=403, detail=f"{required_role} role required")
         return current_user
     return role_checker
+
+
+def _public_submission(sub: dict) -> dict:
+    """Strip internal fields (server paths, embedding blobs) before sending to clients."""
+    return {k: v for k, v in sub.items() if k not in ("file_path", "embedding_json")}
+
+
+def validate_password_strength(password: str) -> None:
+    """Reject weak passwords on signup."""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if not any(c.isdigit() for c in password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one number")
+    if not any(c in "!@#$%^&*()_+-=[]{}|;':\",./<>?" for c in password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one special character")
+
+
+async def require_assignment_owner(batch_id: str, current_user: dict) -> dict:
+    """Verify the current user owns the assignment. Returns the assignment dict.
+    Admins bypass ownership checks."""
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if current_user.get("role") != "admin" and assignment.get("owner_user_id") != current_user.get("user_id"):
+        raise HTTPException(status_code=403, detail="You do not own this assignment")
+    return assignment
+
+
+async def require_submission_owner(submission_id: str, current_user: dict) -> dict:
+    """Verify the current user owns the submission (via batch ownership)."""
+    submission = await run_db(get_submission_by_id, submission_id) if db_ready else None
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    batch_id = submission.get("batch_id")
+    if batch_id:
+        assignment = await run_db(get_assignment, batch_id) if db_ready else None
+        if assignment and current_user.get("role") != "admin":
+            if assignment.get("owner_user_id") != current_user.get("user_id"):
+                raise HTTPException(status_code=403, detail="You do not own this submission")
+    return submission
 
 
 def verify_worker_secret(x_worker_secret: str | None = Header(default=None, alias="X-Worker-Secret")) -> bool:
@@ -521,7 +624,7 @@ async def health_check():
 
 @app.post("/submit")
 @limiter.limit("100/minute")
-async def submit_text(request: Request, body: SubmitRequest):
+async def submit_text(request: Request, body: SubmitRequest, current_user: dict = Depends(get_current_user)):
     """
     Submit text for plagiarism detection.
 
@@ -624,25 +727,37 @@ async def queue_stats():
 @app.post("/auth/signup", response_model=TokenResponse)
 @limiter.limit("10/minute")
 async def auth_signup(request: Request, body: SignupRequest):
-    """Create a new user account and return an access token."""
-    existing = get_user_by_email(body.email) if db_ready else None
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    """Create a new user account and return an access token.
+
+    Duplicate email/roll returns the same generic message as other validation
+    failures to prevent account enumeration; the DB unique constraint is the
+    source of truth.
+    """
+    validate_password_strength(body.password)
 
     user_id = str(uuid.uuid4())
     pwd_hash = hash_password(body.password)
     created = False
+    duplicate = False
     if db_ready:
         try:
-            created = create_user(user_id=user_id, email=body.email, name=body.name, password_hash=pwd_hash)
-        except Exception:
-            created = False
+            created = create_user(user_id=user_id, email=body.email, name=body.name, password_hash=pwd_hash, roll=body.roll)
+        except Exception as exc:
+            if type(exc).__name__ == "IntegrityError":
+                duplicate = True
+            else:
+                created = False
 
     if not created:
-        raise HTTPException(status_code=500, detail="Failed to create user")
+        # Constant-ish response regardless of whether the account exists
+        if not db_ready:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+        if duplicate:
+            audit("auth.signup_duplicate", actor=None, detail={"email": body.email})
+        raise HTTPException(status_code=400, detail="Unable to register with the provided details")
 
     token = create_access_token(user_id, token_version=0)
-    csrf = generate_csrf_token()
+    csrf = generate_csrf_token(user_id)
     response = JSONResponse({"access_token": token, "token_type": "bearer"})
     set_auth_cookie(response, token)
     set_csrf_cookie(response, csrf)
@@ -663,7 +778,7 @@ async def auth_login(request: Request, body: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token(user.get("user_id"), token_version=user.get("token_version", 0))
-    csrf = generate_csrf_token()
+    csrf = generate_csrf_token(user.get("user_id"))
     response = JSONResponse({"access_token": token, "token_type": "bearer"})
     set_auth_cookie(response, token)
     set_csrf_cookie(response, csrf)
@@ -678,7 +793,7 @@ async def auth_refresh(request: Request, current_user: dict = Depends(get_curren
     db_user = get_user_by_id(current_user.get("user_id"))
     token_version = db_user.get("token_version", 0) if db_user else 0
     token = create_access_token(current_user.get("user_id"), token_version=token_version)
-    csrf = generate_csrf_token()
+    csrf = generate_csrf_token(current_user.get("user_id"))
     response = JSONResponse({"access_token": token, "token_type": "bearer"})
     set_auth_cookie(response, token)
     set_csrf_cookie(response, csrf)
@@ -694,9 +809,9 @@ async def auth_logout(response: Response):
 
 
 @app.get("/auth/csrf-token")
-async def get_csrf_token(response: Response):
-    """Return (and set) a fresh CSRF token cookie."""
-    csrf = generate_csrf_token()
+async def get_csrf_token(response: Response, current_user: dict = Depends(get_current_user)):
+    """Return (and set) the session-bound CSRF token cookie."""
+    csrf = generate_csrf_token(current_user.get("user_id"))
     set_csrf_cookie(response, csrf)
     return {"csrf_token": csrf}
 
@@ -708,6 +823,7 @@ async def auth_me(current_user: dict = Depends(get_current_user)):
         "user_id": current_user.get("user_id"),
         "email": current_user.get("email"),
         "name": current_user.get("name"),
+        "roll": current_user.get("roll"),
         "role": current_user.get("role"),
     }
 
@@ -715,16 +831,21 @@ async def auth_me(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/portal/assignments")
-async def create_assignment(body: dict, current_user: dict = Depends(get_current_user)):
+async def create_assignment(body: CreateAssignmentRequest, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Create a new assignment/batch and return batch_id and access_code."""
-    name = body.get("name") or body.get("assignment") or "Assignment"
-    expected = int(body.get("expected_count", 0) or 0)
-    similarity_threshold = float(body.get("similarity_threshold", 0.5))
-    due_date = body.get("due_date")
-    if due_date:
-        due_date = datetime.fromisoformat(due_date)
-    allowed_file_types = body.get("allowed_file_types", ".pdf,.docx,.txt")
-    allow_anonymous = bool(body.get("allow_anonymous", True))
+    name = (body.name or "").strip() or "Assignment"
+    expected = body.expected_count
+    similarity_threshold = body.similarity_threshold
+    due_date = None
+    if body.due_date:
+        try:
+            due_date = datetime.fromisoformat(body.due_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid due_date format — use ISO 8601")
+    allowed_file_types = body.allowed_file_types
+    allow_anonymous = body.allow_anonymous
+    allow_resubmission = body.allow_resubmission
+    max_submissions = body.max_submissions
     batch_id = str(uuid.uuid4())
     access_code = uuid.uuid4().hex[:8]
     ws_connections[batch_id] = set()
@@ -740,6 +861,8 @@ async def create_assignment(body: dict, current_user: dict = Depends(get_current
             due_date=due_date,
             allowed_file_types=allowed_file_types,
             allow_anonymous=allow_anonymous,
+            allow_resubmission=allow_resubmission,
+            max_submissions=max_submissions,
         )
         if not ok:
             raise HTTPException(
@@ -755,16 +878,19 @@ async def list_portal_assignments(current_user: dict = Depends(get_current_user)
     """List assignments for the dashboard."""
     assignments = await run_db(list_assignments) if db_ready else []
     owned = []
-    other = []
+    shared = []
     for assignment in assignments:
-        if assignment.get("owner_user_id") == current_user.get("user_id"):
+        is_owner = assignment.get("owner_user_id") == current_user.get("user_id")
+        is_admin = current_user.get("role") == "admin"
+        if is_owner or is_admin:
             owned.append(assignment)
         else:
-            other.append(assignment)
+            # Strip access code from assignments the user doesn't own
+            stripped = {k: v for k, v in assignment.items() if k != "access_code"}
+            shared.append(stripped)
     return {
         "owned": owned,
-        "shared": other,
-        "all": assignments,
+        "shared": shared,
     }
 
 
@@ -775,25 +901,29 @@ async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
+    # Hide access code from non-owners
+    is_owner = assignment.get("owner_user_id") == current_user.get("user_id")
+    is_admin = current_user.get("role") == "admin"
+    if not is_owner and not is_admin:
+        assignment = {k: v for k, v in assignment.items() if k != "access_code"}
+
     submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
     matrix = await run_db(get_similarity_matrix, batch_id) if db_ready else {}
     return {
         "assignment": assignment,
-        "submissions": submissions,
+        "submissions": [_public_submission(s) for s in submissions],
         "similarity_matrix_ready": bool(matrix),
         "submissions_count": len(submissions),
     }
 
 
 @app.put("/portal/assignments/{batch_id}")
-async def rename_assignment(batch_id: str, body: dict, current_user: dict = Depends(get_current_user)):
+async def rename_assignment(batch_id: str, body: dict, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Rename an assignment."""
     name = body.get("name")
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
-    assignment = await run_db(get_assignment, batch_id) if db_ready else None
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    await require_assignment_owner(batch_id, current_user)
     ok = await run_db(update_assignment, batch_id, name=name.strip())
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to rename assignment")
@@ -802,11 +932,9 @@ async def rename_assignment(batch_id: str, body: dict, current_user: dict = Depe
 
 
 @app.delete("/portal/assignments/{batch_id}")
-async def delete_assignment_endpoint(batch_id: str, current_user: dict = Depends(get_current_user)):
+async def delete_assignment_endpoint(batch_id: str, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Delete an assignment and its submissions."""
-    assignment = await run_db(get_assignment, batch_id) if db_ready else None
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    await require_assignment_owner(batch_id, current_user)
     ok = await run_db(delete_assignment, batch_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to delete assignment")
@@ -859,10 +987,11 @@ async def portal_notify(request: Request):
     Expects JSON: { "batch_id": "...", "processed": 10, "total": 50 }
     Requires X-Worker-Secret header matching configured WORKER_SECRET.
     """
-    if WORKER_SECRET:
-        worker_secret = request.headers.get("X-Worker-Secret", "")
-        if worker_secret != WORKER_SECRET:
-            raise HTTPException(status_code=403, detail="Forbidden")
+    if not WORKER_SECRET:
+        raise HTTPException(status_code=503, detail="WORKER_SECRET not configured")
+    worker_secret = request.headers.get("X-Worker-Secret", "")
+    if worker_secret != WORKER_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
     try:
         payload = await request.json()
         batch_id = payload.get("batch_id")
@@ -922,6 +1051,7 @@ async def portal_submit(
     email: str = Form(None),
     access_code: str = Form(None),
     batch_id: str = Form(None),
+    _csrf: None = Depends(require_csrf),
 ):
     """Accept student submission and enqueue a processing job.
 
@@ -934,7 +1064,14 @@ async def portal_submit(
         if not assignment:
             raise HTTPException(status_code=400, detail="Invalid access code")
         batch_id = assignment["batch_id"]
-        user_id = None
+        # Require authentication for access-code submissions too
+        auth_header = request.headers.get("authorization", "")
+        user_obj = get_optional_user(auth_header) if auth_header else None
+        if not user_obj:
+            raise HTTPException(status_code=401, detail="Authentication required to submit")
+        user_id = user_obj.get("user_id")
+        # Use roll from authenticated user's profile, not from the form
+        roll = user_obj.get("roll") or roll
     elif batch_id:
         assignment = await run_db(get_assignment, batch_id) if db_ready else None
         if not assignment:
@@ -977,6 +1114,7 @@ async def portal_submit(
                 filename=filename,
                 file_path=dest,
                 user_id=locals().get('user_id'),
+                original_filename=file.filename,
             )
             if sub_result["cancelled_submission_id"]:
                 cancelled_path = sub_result["cancelled_file_path"]
@@ -1038,8 +1176,10 @@ async def portal_submit(
 
 
 @app.post("/portal/submissions/{submission_id}/cancel")
-async def cancel_submission(submission_id: str, current_user: dict = Depends(get_current_user)):
+async def cancel_submission(submission_id: str, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Cancel a submission and delete its file if it is still active."""
+    await require_submission_owner(submission_id, current_user)
+
     if not db_ready:
         raise HTTPException(status_code=503, detail="Database not ready")
 
@@ -1105,10 +1245,18 @@ async def portal_ws(websocket: WebSocket, batch_id: str, token: str = ""):
     if not _check_ws_rate(client_ip):
         await websocket.close(code=4001)
         return
-    if token:
-        user_id = decode_access_token(token)
-        if not user_id:
-            await websocket.close(code=4001)
+    if not token:
+        await websocket.close(code=4001)
+        return
+    user_id = decode_access_token(token)
+    if not user_id:
+        await websocket.close(code=4001)
+        return
+    # Verify batch ownership
+    if db_ready:
+        assignment = get_assignment(batch_id)
+        if assignment and assignment.get("owner_id") != user_id:
+            await websocket.close(code=4003)
             return
     await websocket.accept()
     # register
@@ -1130,11 +1278,9 @@ async def portal_ws(websocket: WebSocket, batch_id: str, token: str = ""):
 
 
 @app.post("/portal/compute-similarity/{batch_id}")
-async def compute_similarity(batch_id: str, current_user: dict = Depends(get_current_user)):
+async def compute_similarity(batch_id: str, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Enqueue a batch-compute job for a batch to be processed asynchronously by workers."""
-    assignment = await run_db(get_assignment, batch_id) if db_ready else None
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Batch not found")
+    await require_assignment_owner(batch_id, current_user)
 
     submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
     if len(submissions) < 2:
@@ -1171,6 +1317,67 @@ async def get_batch_similarity_matrix(batch_id: str, current_user: dict = Depend
     return {"batch_id": batch_id, "matrix": matrix}
 
 
+@app.post("/portal/self-check")
+@limiter.limit("10/minute")
+async def self_check(request: Request, file: UploadFile = File(...), access_code: str = Form(None), batch_id: str = Form(None)):
+    """Pre-submission similarity check. Compares uploaded text against existing submissions in a batch."""
+    if not access_code and not batch_id:
+        raise HTTPException(status_code=400, detail="Provide access_code or batch_id")
+    if access_code:
+        assignment = await run_db(get_assignment_by_access_code, access_code) if db_ready else None
+        if not assignment:
+            raise HTTPException(status_code=400, detail="Invalid access code")
+        batch_id = assignment["batch_id"]
+    elif batch_id:
+        assignment = await run_db(get_assignment, batch_id) if db_ready else None
+        if not assignment:
+            raise HTTPException(status_code=400, detail="Invalid batch_id")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+
+    safe_filename = _sanitize_filename(file.filename or "draft")
+    _validate_file(safe_filename, content)
+
+    try:
+        text = extract_text_from_bytes(content, safe_filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+    if not text or len(text.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Insufficient text for comparison (minimum 50 characters)")
+
+    submissions = await run_db(get_submissions_by_batch, batch_id, limit=100, offset=0) if db_ready else []
+    if len(submissions) < 2:
+        return {"batch_id": batch_id, "matches": [], "message": "Not enough submissions to compare against yet."}
+
+    matrix_data = await run_db(get_similarity_matrix, batch_id) if db_ready else None
+    if not matrix_data:
+        return {"batch_id": batch_id, "matches": [], "message": "No similarity matrix computed yet. Ask your teacher to run similarity compute."}
+
+    matrix = matrix_data.get("matrix", [])
+    matrix_ids = matrix_data.get("submission_ids", [])
+
+    matches = []
+    for i, sub_id in enumerate(matrix_ids):
+        if i >= len(matrix):
+            break
+        row = matrix[i]
+        max_sim = max(row) if row else 0
+        if max_sim > 0.3:
+            j = row.index(max_sim)
+            matches.append({
+                "submission_id": matrix_ids[i],
+                "roll": submissions[i].get("roll", "—") if i < len(submissions) else "—",
+                "max_similarity": max_sim,
+                "matched_with": matrix_ids[j] if j < len(matrix_ids) else None,
+            })
+
+    matches.sort(key=lambda m: m["max_similarity"], reverse=True)
+    return {"batch_id": batch_id, "matches": matches[:10], "text_length": len(text)}
+
+
 @app.get("/portal/submissions/{batch_id}")
 async def list_submissions(batch_id: str, current_user: dict = Depends(get_current_user), limit: int = 100, offset: int = 0):
     """List submissions for a batch from DB with pagination."""
@@ -1178,7 +1385,7 @@ async def list_submissions(batch_id: str, current_user: dict = Depends(get_curre
     total = await run_db(get_submissions_count_by_batch, batch_id) if db_ready else len(page)
     return {
         "batch_id": batch_id,
-        "submissions": page,
+        "submissions": [_public_submission(s) for s in page],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -1278,6 +1485,8 @@ async def get_submission_text(batch_id: str, submission_id: str, current_user: d
 @app.get("/debug/test-extraction/{batch_id}")
 async def debug_extract_batch(batch_id: str, current_user: dict = Depends(get_current_user)):
     """Test endpoint: extract text from all submissions in a batch and test vectorization."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
     from pathlib import Path
 
     from docx import Document
@@ -1351,9 +1560,7 @@ async def download_report(
     current_user: dict = Depends(get_current_user),
 ):
     """Generate and download a PDF similarity report for a pair of submissions."""
-    assignment = await run_db(get_assignment, batch_id)
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    await require_assignment_owner(batch_id, current_user)
 
     sub_1 = await run_db(get_submission_by_id, sub_id_1)
     sub_2 = await run_db(get_submission_by_id, sub_id_2)
@@ -1362,6 +1569,8 @@ async def download_report(
 
     matrix = await run_db(get_similarity_matrix, batch_id)
     score = matrix.get(sub_id_1, {}).get(sub_id_2, 0.0)
+
+    assignment = await run_db(get_assignment, batch_id) if db_ready else None
 
     try:
         text_1 = extract_text(sub_1.get("file_path", ""))
@@ -1401,8 +1610,47 @@ async def cross_batch_comparison(
     current_user: dict = Depends(get_current_user),
 ):
     """Compare submissions across two different batches."""
+    await require_assignment_owner(batch_id_1, current_user)
+    await require_assignment_owner(batch_id_2, current_user)
     results = await run_db(get_cross_batch_comparisons, batch_id_1, batch_id_2)
     return {"batch_id_1": batch_id_1, "batch_id_2": batch_id_2, "comparisons": results}
+
+
+@app.get("/portal/annotations/{submission_id}")
+async def get_annotations(submission_id: str, current_user: dict = Depends(get_current_user)):
+    """Get annotations for a submission."""
+    from shared.database import get_annotations_for_submission as db_get_annotations
+    annotations = await run_db(db_get_annotations, submission_id) if db_ready else []
+    return {"submission_id": submission_id, "annotations": annotations}
+
+
+@app.post("/portal/annotations/{submission_id}")
+async def add_annotation(submission_id: str, body: dict, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
+    """Add an annotation to a submission."""
+    from shared.database import create_annotation as db_create_annotation
+    from shared.database import get_submission as db_get_submission
+    submission = await run_db(db_get_submission, submission_id) if db_ready else None
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Annotation content is required")
+    ok = await run_db(db_create_annotation, submission_id, submission["batch_id"], current_user["user_id"], content, body.get("highlight_text")) if db_ready else False
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save annotation")
+    audit("portal.annotation.add", actor=current_user.get("user_id"), detail={"submission_id": submission_id})
+    return {"ok": True}
+
+
+@app.delete("/portal/annotations/{annotation_id}")
+async def delete_annotation_endpoint(annotation_id: int, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
+    """Delete an annotation (author only)."""
+    from shared.database import delete_annotation as db_delete_annotation
+    ok = await run_db(db_delete_annotation, annotation_id, current_user["user_id"]) if db_ready else False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Annotation not found or not yours")
+    audit("portal.annotation.delete", actor=current_user.get("user_id"), detail={"annotation_id": annotation_id})
+    return {"ok": True}
 
 
 @app.get("/portal/student-comparison/{submission_id}")
@@ -1411,6 +1659,7 @@ async def student_comparison(
     current_user: dict = Depends(get_current_user),
 ):
     """Get comparison details for a single submission."""
+    await require_submission_owner(submission_id, current_user)
     details = await run_db(get_student_comparison_details, submission_id)
     return {"submission_id": submission_id, "comparisons": details}
 
@@ -1496,10 +1745,13 @@ async def admin_list_users(
 
 
 @app.post("/admin/users/{user_id}/role")
+@limiter.limit("10/minute")
 async def admin_update_role(
+    request: Request,
     user_id: str,
     body: dict,
     current_user: dict = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
 ):
     """Update a user's role."""
     new_role = body.get("role", "user")
@@ -1508,6 +1760,11 @@ async def admin_update_role(
     ok = await run_db(update_user_role, user_id, new_role)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found")
+    audit(
+        "admin.role_change",
+        actor=current_user.get("user_id"),
+        detail={"target_user": user_id, "new_role": new_role},
+    )
     return {"ok": True}
 
 

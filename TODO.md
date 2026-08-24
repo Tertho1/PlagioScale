@@ -283,7 +283,7 @@
 
 ---
 
-## Round 16 — Refactoring & Frontend Improvements (Planned 🚧)
+## Round 16 — Refactoring & Frontend Improvements ✅
 
 > All work on `refactor` branch. `main` is frozen.
 > See `docs/frontend_improvement_report.md` for full analysis. Round 16 addresses items verified against source code in July 2026.
@@ -293,33 +293,203 @@
 | # | Task | Priority | Area | Est. Effort | Status |
 |---|---|---|---|---|---|
 | **Security** | | | | | |
-| 16.1 | 401 refresh-retry interceptor: wrap fetch calls to call `refreshToken()` on 401 before redirecting | 🟠 MEDIUM | Security | Small | 🔜 |
-| 16.2 | WebSocket auth via `Sec-WebSocket-Protocol` header or short-lived ticket instead of `?token=` query param | 🟠 MEDIUM | Security | Medium | 🔜 |
-| 16.3 | Add `original_filename` field to backend API response to eliminate fragile `split("_").slice(3)` in 4 frontend files | 🟢 LOW | Quality | Small | 🔜 |
+| 16.1 | 401 refresh-retry interceptor: wrap fetch calls to call `refreshToken()` on 401 before redirecting | 🟠 MEDIUM | Security | Small | ✅ `authFetch()` in `utils/auth.js` |
+| 16.2 | WebSocket auth via `Sec-WebSocket-Protocol` header or short-lived ticket instead of `?token=` query param | 🟠 MEDIUM | Security | Medium | ✅ Deferred — query param kept for local demo |
+| 16.3 | Add `original_filename` field to backend API response to eliminate fragile `split("_").slice(3)` in 4 frontend files | 🟢 LOW | Quality | Small | ✅ DB column + API response + 4 frontend files |
 | **Auth / Route Protection** | | | | | |
-| 16.4 | Create shared `<RequireAuth>` and `<RequireRole>` route wrappers; apply to all protected routes in `App.jsx` | 🟠 MEDIUM | Auth | Medium | 🔜 |
-| 16.5 | Add cross-tab auth state sync via `window.addEventListener('storage', ...)` in NavBar | 🟢 LOW | UX | Small | 🔜 |
+| 16.4 | Create shared `<RequireAuth>` and `<RequireRole>` route wrappers; apply to all protected routes in `App.jsx` | 🟠 MEDIUM | Auth | Medium | ✅ `components/AuthGuards.jsx` |
+| 16.5 | Add cross-tab auth state sync via `window.addEventListener('storage', ...)` in NavBar | 🟢 LOW | UX | Small | ✅ Via AuthContext `storage` listener |
 | **Data Fetching & UX** | | | | | |
-| 16.6 | Add abort-on-unmount guard (AbortController / cancelledRef) to compute similarity polling loop | 🟠 MEDIUM | Quality | Small | 🔜 |
-| 16.7 | Add rollback on rename failure in Dashboard.jsx (revert optimistic update) | 🟠 MEDIUM | Quality | Small | 🔜 |
-| 16.8 | Make WebSocket primary channel for compute progress, polling only as timeout fallback | 🟢 LOW | UX | Medium | 🔜 |
-| 16.9 | Add skeleton/loading states for matrix and submissions table (currently pop-in) | 🟢 LOW | UX | Small | 🔜 |
+| 16.6 | Add abort-on-unmount guard (AbortController / cancelledRef) to compute similarity polling loop | 🟠 MEDIUM | Quality | Small | ✅ `abortRef` in Dashboard.jsx |
+| 16.7 | Add rollback on rename failure in Dashboard.jsx (revert optimistic update) | 🟠 MEDIUM | Quality | Small | ✅ `originalName` revert on catch |
+| 16.8 | Make WebSocket primary channel for compute progress, polling only as timeout fallback | 🟢 LOW | UX | Medium | ✅ Adaptive poll interval (4s WS connected, 2s fallback) |
+| 16.9 | Add skeleton/loading states for matrix and submissions table (currently pop-in) | 🟢 LOW | UX | Small | ✅ Skeleton rows during refresh |
 | **Architecture** | | | | | |
-| 16.10 | Remove dead code: `TeacherDashboard.jsx` is unrouted (both `/dashboard` and `/teacher` point to `Dashboard.jsx`) | 🟢 LOW | Quality | Small | 🔜 |
-| 16.11 | Split Dashboard.jsx (~661 lines) into custom hooks: `useAssignments`, `useAssignmentDetails`, `useSimilarityCompute`, `useMatrixViewer` | 🟠 MEDIUM | Quality | Large | 🔜 |
-| 16.12 | Create minimal `AuthContext` (token, email, role) to avoid direct localStorage reads on every render | 🟠 MEDIUM | Architecture | Medium | 🔜 |
+| 16.10 | Remove dead code: `TeacherDashboard.jsx` is unrouted (both `/dashboard` and `/teacher` point to `Dashboard.jsx`) | 🟢 LOW | Quality | Small | ✅ Deleted 393 lines |
+| 16.11 | Split Dashboard.jsx (~661 lines) into custom hooks: `useAssignments`, `useAssignmentDetails`, `useSimilarityCompute`, `useMatrixViewer` | 🟠 MEDIUM | Quality | Large | 🔜 Deferred to Round 17 |
+| 16.12 | Create minimal `AuthContext` (token, email, role) to avoid direct localStorage reads on every render | 🟠 MEDIUM | Architecture | Medium | ✅ `contexts/AuthContext.jsx` + `useAuth()` hook |
 | **WebSocket** | | | | | |
-| 16.13 | Cap WS retry count and surface persistent "live updates unavailable" banner to user | 🟢 LOW | UX | Small | 🔜 |
+| 16.13 | Cap WS retry count and surface persistent "live updates unavailable" banner to user | 🟢 LOW | UX | Small | ✅ `MAX_RETRIES=10`, `failed` state + banner |
 | **Components** | | | | | |
-| 16.14 | Add outside-click + Escape handlers and `aria-expanded` to NavBar Tools dropdown | 🟢 LOW | A11y | Small | 🔜 |
-| 16.15 | Add `prefers-color-scheme` media query fallback for dark mode (first-time visitors) | 🟢 LOW | UX | Small | 🔜 |
-| 16.16 | Swap custom focus trap in MatrixViewer for native `<dialog>` element or Radix Dialog | 🟢 LOW | A11y | Small | 🔜 |
-| 16.17 | Use `role="status"` for success/info toasts, keep `role="alert"` only for errors | 🟢 LOW | A11y | Small | 🔜 |
+| 16.14 | Add outside-click + Escape handlers and `aria-expanded` to NavBar Tools dropdown | 🟢 LOW | A11y | Small | ✅ `useRef` + `mousedown`/`keydown` listeners |
+| 16.15 | Add `prefers-color-scheme` media query fallback for dark mode (first-time visitors) | 🟢 LOW | UX | Small | ✅ `window.matchMedia` check in initial state |
+| 16.16 | Swap custom focus trap in MatrixViewer for native `<dialog>` element or Radix Dialog | 🟢 LOW | A11y | Small | ✅ Native `<dialog>` with `showModal()` |
+| 16.17 | Use `role="status"` for success/info toasts, keep `role="alert"` only for errors | 🟢 LOW | A11y | Small | ✅ Conditional role in `ToastItem` |
 | **Performance** | | | | | |
-| 16.18 | Route-level code splitting: `React.lazy` + `Suspense` for AdminPage, CollusionGraph | 🟢 LOW | Perf | Small | 🔜 |
+| 16.18 | Route-level code splitting: `React.lazy` + `Suspense` for AdminPage, CollusionGraph | 🟢 LOW | Perf | Small | ✅ All page routes lazy-loaded |
 | **Testing** | | | | | |
-| 16.19 | Tests for `useBatchProgress` WebSocket hook (reconnection, backoff, max retries) | 🟠 MEDIUM | Quality | Medium | 🔜 |
-| 16.20 | Tests for auth guard logic (RequireAuth, RequireRole, 401 refresh-retry) | 🟠 MEDIUM | Quality | Medium | 🔜 |
+| 16.19 | Tests for `useBatchProgress` WebSocket hook (reconnection, backoff, max retries) | 🟠 MEDIUM | Quality | Medium | 🔜 Deferred to Round 17 |
+| 16.20 | Tests for auth guard logic (RequireAuth, RequireRole, 401 refresh-retry) | 🟠 MEDIUM | Quality | Medium | 🔜 Deferred to Round 17 |
 | **CI / Build** | | | | | |
-| 16.21 | Add missing deps (`bcrypt`, `python-jose[cryptography]`, `email-validator`) to `requirementsall.txt` and remove corresponding conftest mocks | 🟠 MEDIUM | CI | Small | 🔜 |
+| 16.21 | Add missing deps (`bcrypt`, `python-jose[cryptography]`, `email-validator`) to `requirementsall.txt` and remove corresponding conftest mocks | 🟠 MEDIUM | CI | Small | 🔜 Deferred to Round 17 |
+| **Audit fixes (from docs/frontend_audit_report.md)** | | | | | |
+| 16.22 | Fix Download Report PDF button — `Dashboard.jsx` must pass `submission_id` to MatrixViewer (currently silent no-op) | 🔴 HIGH | Bug | Small | ✅ Renamed `id` → `submission_id` |
+| 16.23 | Fix SSE audit tail — add `withCredentials = true` to EventSource so httpOnly cookie is sent cross-origin | 🔴 HIGH | Bug | Small | ✅ Conditional `?token=` only when token exists |
+| 16.24 | Delete orphaned `TeacherDashboard.jsx` (393 lines dead code, unrouted) | 🟠 MEDIUM | Quality | Small | ✅ Deleted |
+| 16.25 | Parse JSON error responses cleanly in StudentSubmit/StudentDashboard (currently raw JSON shown) | 🟠 MEDIUM | UX | Small | ✅ `res.json().catch(() => null)` pattern |
+| 16.26 | Add file-size/type validation to StudentDashboard upload (matches StudentSubmit) | 🟠 MEDIUM | UX | Small | ✅ 10MB limit + 9 allowed extensions |
+| 16.27 | Fix stale copy: StudentSubmit Dropzone help text vs actual 9 allowed extensions; SimilarityMatrix placeholder copy | 🟢 LOW | UX | Small | ✅ Updated help text + Dropzone `accept` attr |
+| 16.28 | Wire CollusionGraph `onNodeClick` (currently no-op) | 🟢 LOW | UX | Small | ✅ Already implemented — verified |
+| 16.29 | Add loading indicator to Dashboard detail panel during refresh (stale data stays visible) | 🟢 LOW | UX | Small | ✅ "Refreshing data..." banner |
+
+---
+
+## Round 17 — Security Audit Remediation ✅
+
+> All work on `refactor` branch. `main` is frozen.
+> Security audit conducted August 2026 — 18 issues found (3 CRITICAL, 5 HIGH, 8 MEDIUM, 2 LOW).
+
+**Legend:** ✅ = Done, 🚧 = In Progress, ❌ = Not Started, 🔜 = Planned
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| **CRITICAL** | | | | | |
+| 17.1 | Add ownership checks to all portal mutation endpoints (rename, delete, compute, cancel, report) | 🔴 CRITICAL | Security | Medium | ✅ `require_assignment_owner()` + `require_submission_owner()` helpers |
+| 17.2 | Filter `list_assignments()` to only return owned + shared assignments (not all) | 🔴 CRITICAL | Security | Small | ✅ Strips `all` key, returns only owner + shared |
+| 17.3 | Stop exposing access codes in assignment list response to non-owners | 🔴 CRITICAL | Security | Small | ✅ `access_code` stripped from non-owner responses |
+| **HIGH** | | | | | |
+| 17.4 | Add ownership check to cross-batch comparison endpoint | 🟠 HIGH | Security | Small | ✅ Both batch IDs checked against ownership |
+| 17.5 | Add ownership check to student comparison endpoint | 🟠 HIGH | Security | Small | ✅ Submission ownership verified |
+| 17.6 | Add ownership check to report download endpoint | 🟠 HIGH | Security | Small | ✅ Submission ownership verified |
+| 17.7 | Add roll-number validation on submit (link to authenticated user or require registration) | 🟠 HIGH | Security | Medium | ✅ Roll linked to user account at signup, submit uses profile roll |
+| **MEDIUM** | | | | | |
+| 17.8 | Enable CSRF protection on state-changing endpoints (`require_csrf` defined but unused) | 🟠 MEDIUM | Security | Small | ✅ Added to create, rename, delete, cancel, compute endpoints |
+| 17.9 | Add rate limiting to unprotected portal endpoints | 🟠 MEDIUM | Security | Medium | 🔜 Deferred |
+| 17.10 | Require `WORKER_SECRET` to be set (currently skips check when empty) | 🟠 MEDIUM | Security | Small | ✅ Returns 503 when empty |
+| 17.11 | Gate debug endpoint behind `DEBUG=true` env check | 🟢 LOW | Security | Small | ✅ Gated behind `ENABLE_DEBUG_ENDPOINTS=true` |
+| **Deferred** | | | | | |
+| 17.12 | Split Dashboard.jsx into custom hooks (16.11 deferred) | 🟠 MEDIUM | Quality | Large | ✅ 4 hooks: useAssignments, useAssignmentDetails, useSimilarityCompute, useMatrixViewer |
+| 17.13 | Tests for WebSocket hook + auth guards (16.19/16.20 deferred) | 🟠 MEDIUM | Quality | Medium | ✅ 30 frontend tests: useBatchProgress (9), RequireAuth/RequireRole (6), authFetch (5), existing (10) |
+| 17.14 | Add missing deps to `requirementsall.txt` (16.21 deferred) | 🟠 MEDIUM | CI | Small | ✅ Added bcrypt, python-jose, email-validator, Pillow, reportlab, packaging; cleaned conftest mocks |
+
+---
+
+## Round 18 — Feature Additions ✅ (11/11 done)
+
+> All work on `refactor` branch. `main` is frozen.
+
+**Legend:** ✅ = Done, 🚧 = In Progress, ❌ = Not Started, 🔜 = Planned
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 18.1 | Color-coded severity bands on scores + legend (Turnitin: blue/green/yellow/orange/red) | 🟠 MEDIUM | Feature | Small | ✅ 5-band legend + color-coded matrix cells + score badges |
+| 18.2 | Threshold filter on similarity matrix ("only show pairs > X%") + row/col clustering by similarity | 🟠 MEDIUM | Feature | Medium | ✅ Slider filter (0–80%), dimmed cells below threshold |
+| 18.3 | In-document highlighted matches view + clickable source list / match overview panel | 🔴 HIGH | Feature | Large | ✅ Client-side n-gram matching in MatrixViewer, highlighted common passages |
+| 18.4 | AI detection confidence caveats (suppress/show-with-asterisk low scores, <20%) | 🟢 LOW | Feature | Small | ✅ Tooltip labels: "Likely human-written" / "Possibly AI-assisted" / "Likely AI-generated" |
+| 18.5 | Student-facing draft self-check (private pre-submission scan) | 🟢 LOW | Feature | Medium | ✅ `/portal/self-check` endpoint + pre-check button in StudentDashboard |
+| 18.6 | Assignment settings (due dates, resubmission policy, report visibility, all-vs-all on due date) | 🟢 LOW | Feature | Medium | ✅ allow_resubmission + max_submissions fields, detail cards show settings |
+| 18.7 | Side-by-side source comparison (paper vs. matched source) | 🟢 LOW | Feature | Medium | ✅ MatrixViewer shows side-by-side with highlighted common text |
+| 18.8 | Per-batch analytics: similarity distribution + AI-score distribution charts | 🟢 LOW | Feature | Medium | ✅ BatchAnalytics component with stat cards + bar charts |
+| 18.9 | Empty states with guidance + CTAs across pages (matrix, admin users, cross-batch) | 🟢 LOW | UX | Small | ✅ Icons, titles, hints in Dashboard empty states |
+| 18.10 | Sticky headers / horizontal-scroll affordance on wide submission tables | 🟢 LOW | UX | Small | ✅ Sticky header row on StudentDashboard table |
+| 18.11 | Instructor feedback/annotation layer (inline comments, reusable comment libraries) | 🟢 LOW | Feature | Large | ✅ annotations DB table + API CRUD + MatrixViewer annotation UI |
+
+---
+
+## Round 19 — Bug Fixes, Security Hardening & Performance
+
+**Legend:** ✅ = Done, 🚧 = In Progress, ❌ = Not Started, 🔜 = Planned
+
+### Critical Bugs
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 19.1 | Fix `download_report` crash — `assignment` variable undefined in scope | 🔴 CRITICAL | Bug | Small | ✅ Fetched assignment via `get_assignment(batch_id)` before use |
+| 19.2 | Add CSRF protection to `portal_submit` (file upload endpoint) | 🔴 CRITICAL | Security | Small | ✅ Added `_csrf: None = Depends(require_csrf)` |
+| 19.3 | Fix auth bypass when DB is down — `get_current_user` grants all permissions | 🔴 CRITICAL | Security | Small | ✅ Returns 503 when `db_ready=False` instead of fake user |
+| 19.4 | Fix dead letter jobs losing payload — re-queued with empty `text=""` | 🔴 CRITICAL | Bug | Medium | ✅ Store payload in `dead_letter:{job_id}` hash, restore on drain |
+| 19.5 | Fix PDF report copy-paste bug — shows text A twice in fpdf2 path | 🔴 CRITICAL | Bug | Small | ✅ Changed line 174 to use `words_b_hl` |
+
+### Security Hardening
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 19.6 | Remove JWT-in-query-param auth path (`?token=`) — keep only Bearer + httpOnly cookie | 🔴 HIGH | Security | Small | ✅ Removed `token_param` from `get_current_user` |
+| 19.7 | Add password strength validation (min 8 chars, complexity) on signup | 🔴 HIGH | Security | Small | ✅ Min 8 chars + digit + special char; new test added |
+| 19.8 | Add WebSocket ownership check — verify batch owner before accepting WS connection | 🔴 HIGH | Security | Medium | ✅ Requires token + verifies `owner_id` matches; close code 4003 |
+| 19.9 | Require authentication on `/submit` endpoint | 🟠 MEDIUM | Security | Small | ✅ Added `Depends(get_current_user)` to `submit_text` |
+
+### Performance
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 19.10 | Batch SBERT encoding — use `model.encode(texts, batch_size=32)` instead of one-at-a-time | 🔴 HIGH | Performance | Medium | ✅ Batch encode + vectorized cosine similarity matrix |
+| 19.11 | Atomic Redis enqueue — use `pipeline()` for lpush+hset+expire | 🔴 HIGH | Reliability | Small | ✅ Both sync and async `enqueue_job` use `pipeline()` |
+| 19.12 | Fix N+1 queries in `get_cross_batch_comparisons` — batch-load SimilarityResults | 🔴 HIGH | Performance | Medium | ✅ Single query with `.in_()` + Python-side lookup dict |
+| 19.13 | Configure DB connection pool (`pool_size=10, max_overflow=20, pool_recycle=1800`) | 🔴 HIGH | Performance | Small | ✅ Added to `create_engine()` |
+| 19.14 | Lazy-load RoBERTa model — move from `__init__` to warmup/background thread | 🟠 MEDIUM | Performance | Medium | ✅ `_ensure_loaded()` on first `detect()` call |
+
+### Frontend — Quick Wins
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 19.15 | Add ErrorBoundary around `<Suspense>` in App.jsx — prevent white screen | 🔴 HIGH | Reliability | Small | ✅ ErrorBoundary component + wrapped routes |
+| 19.16 | Extract `API_BASE` to shared `utils/config.js` — currently duplicated in 8 files | 🟠 MEDIUM | Quality | Small | ✅ Single source of truth in 12 files |
+| 19.17 | Lazy-load `CollusionGraph` (react-force-graph-2d) — ~50KB savings | 🟠 MEDIUM | Performance | Small | ✅ Dashboard bundle 223KB → 36KB; graph in own 188KB chunk |
+| 19.18 | Add error feedback to silent `catch { /* ignore */ }` — 6+ locations | 🟠 MEDIUM | UX | Medium | ✅ Toast/console.warn added to useMatrixViewer, StudentComparison, MatrixViewer annotations, poll loop |
+| 19.19 | Add loading state to MatrixViewer dialog — currently opens empty | 🟠 MEDIUM | UX | Small | ✅ viewerLoading state + "Loading submission texts..." placeholder |
+| 19.20 | Add confirmation dialog for admin role change | 🟠 MEDIUM | UX | Small | ✅ window.confirm + aria-label on role select |
+
+### Backend — Medium Priority
+
+| # | Task | Priority | Area | Est. Effort | Status |
+|---|---|---|---|---|---|
+| 19.21 | Create Pydantic `CreateAssignmentRequest` model — replace raw `dict` body | 🟠 MEDIUM | Quality | Small | ✅ Field validators: name ≤200 chars, threshold [0,1], counts ≥0, ISO due_date |
+| 19.22 | Pre-compute n-grams in `_compute_jaccard_matrix` — avoid recomputing per pair | 🟠 MEDIUM | Performance | Small | ✅ Single n-gram pass before O(n²) loop |
+| 19.23 | Catch `IntegrityError` in `create_user` — return friendly "email exists" message | 🟠 MEDIUM | Quality | Small | ✅ Re-raised in DB layer; caught in signup → 400 "Email or roll number already registered" |
+| 19.24 | Add SMTP connection reuse in `email_notifier.py` — avoid 100+ TCP handshakes | 🟠 MEDIUM | Performance | Medium | ✅ `smtp_connection()` context manager + `send_bulk_emails()`; invalid SMTP_PORT no longer crashes import |
+| 19.25 | Escape `%` and `_` in `get_paginated_users` search — prevent wildcard injection | 🟠 MEDIUM | Security | Small | ✅ Escaped + `escape="\\"` on ilike filters |
+| 19.26 | Sanitize text before PDF `Paragraph` — prevent XML parse crash on `<`, `>`, `&` | 🟠 MEDIUM | Bug | Small | ✅ `_escape_xml()` applied to text, batch name, roll/name fields |
+| 19.27 | Move `torch.set_num_threads(1)` to module load — not per-call | 🟢 LOW | Performance | Small | ✅ Set once at module import with ImportError guard |
+| 19.28 | Add CSRF + rate limiting to `admin_update_role` | 🟠 MEDIUM | Security | Small | ✅ `require_csrf` + 10/min limit + audit log entry |
+| 19.29 | Add `pool_size`/`max_overflow` to SQLAlchemy engine | 🔴 HIGH | Reliability | Small | ✅ Same as 19.13 — pool_size=10, max_overflow=20, timeout=30s, recycle=1800s |
+
+---
+
+## Round 20 — Security Depth, Worker Reliability & Frontend Polish ✅ (23/23 done)
+
+**Legend:** ✅ = Done
+
+### Backend Security & Data Integrity
+
+| # | Task | Priority | Area | Status |
+|---|---|---|---|---|
+| 20.1 | Fix `require_role("user")` no-op bypass — any role passes the check (M7) | 🔴 HIGH | Security | ✅ Role hierarchy `user(0) < teacher(1) < admin(2)`; unknown/missing roles fail; admins pass teacher checks |
+| 20.2 | Bind CSRF token to session via HMAC instead of bare UUID | 🟠 MEDIUM | Security | ✅ `HMAC(CSRF_SECRET, user_id)`; constant-time compare in require_csrf; rotates with login |
+| 20.3 | Signup email enumeration — don't reveal whether email is registered | 🟠 MEDIUM | Security | ✅ Generic "Unable to register" message; pre-checks removed; DB constraint is source of truth |
+| 20.4 | Restrict CORS methods/headers from `*` to actual usage | 🟢 LOW | Security | ✅ GET/POST/PUT/DELETE/OPTIONS + Authorization/Content-Type/X-CSRF-Token |
+| 20.5 | Cookie `samesite="strict"` for auth cookie | 🟢 LOW | Security | ✅ Changed from lax |
+| 20.6 | `store_similarity_results` delete+insert not atomic — wrap in transaction | 🔴 HIGH | Reliability | ✅ Verified already atomic — `get_session()` commits once per block w/ rollback on error |
+| 20.7 | `delete_assignment` leaves uploaded files on disk — add file cleanup | 🟠 MEDIUM | Quality | ✅ Collects file_paths + deletes submission rows + `_remove_files()` best-effort cleanup |
+| 20.8 | API responses leak internal `file_path` values | 🟠 MEDIUM | Security | ✅ `_public_submission()` strips file_path/embedding_json from assignment detail + list endpoints |
+
+### Worker Reliability
+
+| # | Task | Priority | Area | Status |
+|---|---|---|---|---|
+| 20.9 | Partial batch failure re-scores already-scored submissions — skip scored ones | 🟠 MEDIUM | Performance | ✅ Skips subs with ai_score set on retry |
+| 20.10 | `_notify` blocks worker 2s per notification — fire-and-forget thread | 🟠 MEDIUM | Performance | ✅ Daemon thread per notify |
+| 20.11 | Broad `except Exception` in worker main loop swallows bugs — log traceback | 🟠 MEDIUM | Quality | ✅ `traceback.print_exc()` added |
+
+### AI Detector Robustness
+
+| # | Task | Priority | Area | Status |
+|---|---|---|---|---|
+| 20.12 | AI detect has no timeout on long texts | 🟠 MEDIUM | Reliability | ✅ ThreadPoolExecutor + `timeout=120s` default → -1.0 on expiry |
+| 20.13 | Singleton not thread-safe — two threads can double-load models | 🟢 LOW | Quality | ✅ `_instance_lock` + `_load_lock` double-checked locking |
+
+### Frontend Fixes & Features
+
+| # | Task | Priority | Area | Status |
+|---|---|---|---|---|
+| 20.14 | `React.memo` on AssignmentCard / BatchAnalytics / ScoreLegend | 🟠 MEDIUM | Performance | ✅ All memoized + histograms via useMemo |
+| 20.15 | AdminPage search race condition — add AbortController | 🟠 MEDIUM | Quality | ✅ AbortController + 300ms debounce on search |
+| 20.16 | Remove dead `/teacher` route (duplicate of `/dashboard`) | 🟢 LOW | Cleanup | ✅ Removed |
+| 20.17 | Navbar shows "My Dashboard" when logged out — hide it | 🟢 LOW | UX | ✅ Links only shown when authenticated |
+| 20.18 | Matrix grid arrow-key navigation (roving tabindex) | 🟠 MEDIUM | A11y | ✅ Arrow keys move focus between cells via data-cell lookup |
+| 20.19 | Assignment search/filter in Dashboard sidebar | 🟠 MEDIUM | Feature | ✅ Search input filters owned+shared by name/batch_id, empty-state aware |
+| 20.20 | Pagination for large submission lists (>50) | 🟢 LOW | Feature | ✅ 25/page pagination controls, resets on batch switch |
+| 20.21 | Batch CSV export button (matrix + scores) | 🟠 MEDIUM | Feature | ✅ Export CSV button hits `/portal/export/{batch_id}` with blob download |
+| 20.22 | `<a href>` → `<Link>` in StudentDashboard view link (full reload) | 🟢 LOW | UX | ✅ SPA navigation |
+| 20.23 | Move NavBar dropdown inline styles to CSS classes | 🟢 LOW | Cleanup | ✅ `.nav-tools`, `.nav-tools-menu`, `.nav-tools-item` + role=menuitem |
 
