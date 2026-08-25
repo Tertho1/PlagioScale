@@ -558,11 +558,16 @@ def validate_password_strength(password: str) -> None:
 
 async def require_assignment_owner(batch_id: str, current_user: dict) -> dict:
     """Verify the current user owns the assignment. Returns the assignment dict.
-    Admins bypass ownership checks."""
+    Admins bypass ownership checks. Legacy rows with no owner are manageable by anyone."""
     assignment = await run_db(get_assignment, batch_id) if db_ready else None
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    if current_user.get("role") != "admin" and assignment.get("owner_user_id") != current_user.get("user_id"):
+    owner = assignment.get("owner_user_id")
+    if (
+        current_user.get("role") != "admin"
+        and owner
+        and owner != current_user.get("user_id")
+    ):
         raise HTTPException(status_code=403, detail="You do not own this assignment")
     return assignment
 
@@ -882,10 +887,15 @@ async def list_portal_assignments(current_user: dict = Depends(get_current_user)
     owned = []
     shared = []
     for assignment in assignments:
-        is_owner = assignment.get("owner_user_id") == current_user.get("user_id")
+        owner = assignment.get("owner_user_id")
+        is_owner = owner == current_user.get("user_id")
         is_admin = current_user.get("role") == "admin"
+        # Legacy rows created before ownership existed: visible to everyone, code included
+        is_legacy = not owner
         if is_owner or is_admin:
             owned.append(assignment)
+        elif is_legacy:
+            shared.append(assignment)
         else:
             # Strip access code from assignments the user doesn't own
             stripped = {k: v for k, v in assignment.items() if k != "access_code"}
@@ -903,10 +913,11 @@ async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    # Hide access code from non-owners
-    is_owner = assignment.get("owner_user_id") == current_user.get("user_id")
+    # Hide access code from non-owners (legacy NULL-owner rows stay visible to all)
+    owner = assignment.get("owner_user_id")
+    is_owner = owner == current_user.get("user_id") if owner else False
     is_admin = current_user.get("role") == "admin"
-    if not is_owner and not is_admin:
+    if not is_owner and not is_admin and owner:
         assignment = {k: v for k, v in assignment.items() if k != "access_code"}
 
     submissions = await run_db(get_submissions_by_batch, batch_id) if db_ready else []
@@ -921,15 +932,26 @@ async def get_portal_assignment(batch_id: str, current_user: dict = Depends(get_
 
 @app.put("/portal/assignments/{batch_id}")
 async def rename_assignment(batch_id: str, body: dict, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
-    """Rename an assignment."""
+    """Rename or update assignment settings (name, due_date)."""
     name = body.get("name")
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
     await require_assignment_owner(batch_id, current_user)
-    ok = await run_db(update_assignment, batch_id, name=name.strip())
+    due_date = None
+    due_date_clear = False
+    if "due_date" in body:
+        raw = body["due_date"]
+        if raw is None or raw == "":
+            due_date_clear = True
+        else:
+            try:
+                due_date = datetime.fromisoformat(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid due_date format — use ISO 8601")
+    ok = await run_db(update_assignment, batch_id, name=name.strip(), due_date=due_date, due_date_clear=due_date_clear)
     if not ok:
-        raise HTTPException(status_code=500, detail="Failed to rename assignment")
-    audit("assignment.rename", actor=current_user.get("user_id"), resource=batch_id, detail=name.strip())
+        raise HTTPException(status_code=500, detail="Failed to update assignment")
+    audit("assignment.update", actor=current_user.get("user_id"), resource=batch_id, detail=name.strip())
     return {"success": True, "batch_id": batch_id, "name": name.strip()}
 
 
@@ -1083,6 +1105,16 @@ async def portal_submit(
         user_id = user_obj.get("user_id") if user_obj else None
     else:
         raise HTTPException(status_code=400, detail="Provide access_code or batch_id")
+
+    if assignment and assignment.get("due_date"):
+        try:
+            due = datetime.fromisoformat(assignment["due_date"])
+            if datetime.now(due.tzinfo) > due:
+                raise HTTPException(status_code=400, detail="Assignment deadline has passed — submissions are no longer accepted")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     content = await file.read()
     safe_filename = _sanitize_filename(file.filename or "upload")
@@ -1291,6 +1323,20 @@ async def compute_similarity(batch_id: str, current_user: dict = Depends(get_cur
             detail="Upload at least 2 submissions before computing similarity.",
         )
 
+    # Enqueue AI detection alongside similarity compute
+    try:
+        ai_job_id = f"batch-{batch_id}-ai-{uuid.uuid4().hex[:8]}"
+        ai_payload = json.dumps({"type": "AI_DETECTION", "batch_id": batch_id})
+        ai_job = Job(job_id=ai_job_id, text=ai_payload)
+        await queue_client.enqueue_job(ai_job)
+        if db_ready:
+            try:
+                await run_db(create_job_record, job_id=ai_job_id, text=ai_payload, status=JobStatus.PENDING.value)
+            except Exception:
+                logging.warning("Failed to create job record for AI detection %s", ai_job_id)
+    except Exception:
+        logging.warning("Failed to enqueue AI detection for %s", batch_id)
+
     job_id = f"batch-{batch_id}-{uuid.uuid4().hex[:8]}"
     payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
     job = Job(job_id=job_id, text=payload)
@@ -1317,6 +1363,19 @@ async def get_batch_similarity_matrix(batch_id: str, current_user: dict = Depend
         raise HTTPException(status_code=404, detail="Similarity matrix not computed")
 
     return {"batch_id": batch_id, "matrix": matrix}
+
+
+@app.get("/portal/assignment-info")
+async def get_assignment_info(access_code: str):
+    """Return basic assignment info (name, due_date) for students. No auth required."""
+    assignment = await run_db(get_assignment_by_access_code, access_code) if db_ready else None
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Invalid access code")
+    return {
+        "name": assignment.get("name"),
+        "due_date": assignment.get("due_date"),
+        "expected_count": assignment.get("expected_count"),
+    }
 
 
 @app.post("/portal/self-check")

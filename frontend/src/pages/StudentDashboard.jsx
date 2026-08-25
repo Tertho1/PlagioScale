@@ -8,7 +8,8 @@ import '../styles/portal.css'
 
 export default function StudentDashboard() {
   const navigate = useNavigate()
-  const { roll } = useAuth()
+  const { roll: profileRoll } = useAuth()
+  const [manualRoll, setManualRoll] = useState('')
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -17,6 +18,9 @@ export default function StudentDashboard() {
   const [uploadStatus, setUploadStatus] = useState('')
   const [selfCheck, setSelfCheck] = useState(null)
   const [checking, setChecking] = useState(false)
+
+  // Profile roll wins; otherwise accept a one-time manual entry.
+  const roll = profileRoll || manualRoll.trim()
 
   useEffect(() => {
     fetchMySubmissions()
@@ -110,20 +114,6 @@ export default function StudentDashboard() {
     }
   }
 
-  if (!roll) {
-    return (
-      <div className="page-shell">
-        <section className="hero-card" style={{ marginBottom: 20 }}>
-          <div className="eyebrow">My submissions</div>
-          <h1>Roll number required</h1>
-          <p className="hero-copy">
-            Your account does not have a roll number. Please sign up with a roll number to submit assignments.
-          </p>
-        </section>
-      </div>
-    )
-  }
-
   return (
     <div className="page-shell">
 
@@ -132,7 +122,7 @@ export default function StudentDashboard() {
         <h1>Your assignments and submissions</h1>
         <p className="hero-copy">
           View your submissions across all batches. Upload new files to existing batches.
-          Roll: <strong>{roll}</strong>
+          {profileRoll ? <> Roll: <strong>{profileRoll}</strong></> : null}
         </p>
       </section>
 
@@ -157,13 +147,23 @@ export default function StudentDashboard() {
               </select>
             </div>
             <div className="field">
-              <label>Roll Number</label>
-              <input
-                type="text"
-                value={roll}
-                disabled
-              />
-              <div className="field-help">Linked from your account profile</div>
+              <label htmlFor="sd-roll">Roll Number</label>
+              {profileRoll ? (
+                <input id="sd-roll" type="text" value={profileRoll} disabled />
+              ) : (
+                <>
+                  <input
+                    id="sd-roll"
+                    type="text"
+                    value={manualRoll}
+                    onChange={e => setManualRoll(e.target.value)}
+                    placeholder="e.g. 22045"
+                    autoComplete="off"
+                    required
+                  />
+                  <div className="field-help">Your account has no roll number yet — enter it here.</div>
+                </>
+              )}
             </div>
             <div className="field">
               <label>File</label>

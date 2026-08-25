@@ -5,23 +5,28 @@ import { getAuthHeaders } from '../utils/auth'
 import { showToast } from './Toast'
 import '../styles/portal.css'
 
+const MAX_NGRAM_CHARS = 20000;
+
 function findCommonNgrams(textA, textB, n = 4) {
   if (!textA || !textB) return [];
-  const wordsA = textA.toLowerCase().split(/\s+/);
-  const wordsB = textB.toLowerCase().split(/\s+/);
-  const matches = [];
-  const seen = new Set();
-
+  const ta = textA.length > MAX_NGRAM_CHARS ? textA.slice(0, MAX_NGRAM_CHARS) : textA;
+  const tb = textB.length > MAX_NGRAM_CHARS ? textB.slice(0, MAX_NGRAM_CHARS) : textB;
+  const wordsA = ta.toLowerCase().split(/\s+/);
+  const wordsB = tb.toLowerCase().split(/\s+/);
+  const gramSet = new Map();
   for (let i = 0; i <= wordsA.length - n; i++) {
     const gram = wordsA.slice(i, i + n).join(' ');
     if (gram.length < 10) continue;
-    for (let j = 0; j <= wordsB.length - n; j++) {
-      const gramB = wordsB.slice(j, j + n).join(' ');
-      if (gram === gramB && !seen.has(gram)) {
-        seen.add(gram);
-        matches.push({ text: wordsA.slice(i, i + n).join(' '), posA: i, posB: j, len: n });
-        break;
-      }
+    if (!gramSet.has(gram)) gramSet.set(gram, i);
+  }
+  const matches = [];
+  const used = new Set();
+  for (let j = 0; j <= wordsB.length - n; j++) {
+    const gram = wordsB.slice(j, j + n).join(' ');
+    if (gram.length < 10) continue;
+    if (gramSet.has(gram) && !used.has(gram)) {
+      used.add(gram);
+      matches.push({ text: wordsA.slice(gramSet.get(gram), gramSet.get(gram) + n).join(' '), posA: gramSet.get(gram), posB: j, len: n });
     }
   }
   return matches;
@@ -87,10 +92,18 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
     setAnnotationText('');
   }, [onClose]);
 
+  const { truncatedLeft, truncatedRight, truncated } = useMemo(() => {
+    const l = leftSubmission?.text || '';
+    const r = rightSubmission?.text || '';
+    return {
+      truncatedLeft: l.length > MAX_NGRAM_CHARS ? l.slice(0, MAX_NGRAM_CHARS) : l,
+      truncatedRight: r.length > MAX_NGRAM_CHARS ? r.slice(0, MAX_NGRAM_CHARS) : r,
+      truncated: l.length > MAX_NGRAM_CHARS || r.length > MAX_NGRAM_CHARS,
+    };
+  }, [leftSubmission?.text, rightSubmission?.text]);
+
   const commonMatches = useMemo(() => {
-    const textA = leftSubmission?.text || '';
-    const textB = rightSubmission?.text || '';
-    return findCommonNgrams(textA, textB, 4);
+    return findCommonNgrams(leftSubmission?.text || '', rightSubmission?.text || '', 4);
   }, [leftSubmission?.text, rightSubmission?.text]);
 
   const loadAnnotations = useCallback(async () => {
@@ -168,6 +181,7 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
             <h3 className="section-title" style={{marginBottom:8}}>Similarity score: {(similarity * 100).toFixed(1)}%</h3>
             <p className="section-copy">
               Review the two submissions side by side. Highlighted passages indicate common text ({commonMatches.length} matches found).
+              {truncated && <span style={{color:'var(--text-soft)', fontSize:12}}> Long documents were truncated for comparison.</span>}
             </p>
           </div>
           <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
@@ -200,7 +214,7 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
               <div><strong>Name:</strong> {leftSubmission?.name || "—"}</div>
               <div><strong>File:</strong> {leftSubmission?.original_filename || (leftSubmission?.filename ? leftSubmission.filename.split("_").slice(3).join("_") : "—")}</div>
             </div>
-            <HighlightedText text={leftSubmission?.text || leftSubmission?.snippet} matches={commonMatches} side="left" color="rgba(251,191,36,0.35)" />
+            <HighlightedText text={truncatedLeft || leftSubmission?.snippet} matches={commonMatches} side="left" color="rgba(251,191,36,0.35)" />
           </div>
           <div className="surface" style={{padding:18, background:'rgba(255,255,255,.92)'}}>
             <div className="field-title" style={{marginBottom:4}}>Right submission</div>
@@ -209,7 +223,7 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
               <div><strong>Name:</strong> {rightSubmission?.name || "—"}</div>
               <div><strong>File:</strong> {rightSubmission?.original_filename || (rightSubmission?.filename ? rightSubmission.filename.split("_").slice(3).join("_") : "—")}</div>
             </div>
-            <HighlightedText text={rightSubmission?.text || rightSubmission?.snippet} matches={commonMatches} side="right" color="rgba(251,191,36,0.35)" />
+            <HighlightedText text={truncatedRight || rightSubmission?.snippet} matches={commonMatches} side="right" color="rgba(251,191,36,0.35)" />
           </div>
         </div>
 

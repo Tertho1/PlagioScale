@@ -78,7 +78,7 @@ services:
     networks:
       - plagioscale-network
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 384m
     cpus: 0.5
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -130,6 +130,11 @@ services:
       - USE_MTLS=${USE_MTLS:-false}
       - HF_HOME=/app/hf_cache
       - HF_HUB_DOWNLOAD_TIMEOUT=30
+      # Memory-footprint controls (keep worker under its 2 GiB cap with all 3 models resident)
+      - MALLOC_ARENA_MAX=2
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
     volumes:
       - uploads_data:/app/uploads
       - worker_storage:/app/storage

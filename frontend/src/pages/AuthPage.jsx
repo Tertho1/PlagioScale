@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { API_BASE } from "../utils/config";
-import { clearToken, getStoredEmail, getToken, setToken } from "../utils/auth";
+import { useAuth } from "../contexts/AuthContext";
+import { clearToken, getStoredEmail } from "../utils/auth";
 import "../styles/portal.css";
 
 export default function AuthPage() {
   const navigate = useNavigate();
+  const { isLoggedIn, login, refreshProfile } = useAuth();
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState(getStoredEmail());
   const [name, setName] = useState("");
@@ -14,9 +16,10 @@ export default function AuthPage() {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Already signed in (context or storage)? Leave the auth page.
   useEffect(() => {
-    if (getToken()) navigate("/dashboard");
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (isLoggedIn) navigate("/dashboard", { replace: true });
+  }, [isLoggedIn, navigate]);
 
   const title = useMemo(
     () => (mode === "login" ? "Sign in to your account" : "Create an account"),
@@ -63,9 +66,11 @@ export default function AuthPage() {
         throw new Error(data.detail || data.message || "Authentication failed");
       }
 
-      setToken(data.access_token, email);
+      // Update React state first, then load profile — no reload needed
+      login(data.access_token, email);
+      await refreshProfile();
       setStatus("Signed in successfully.");
-      navigate("/dashboard");
+      navigate("/dashboard", { replace: true });
     } catch (error) {
       clearToken();
       setStatus(`Error: ${error.message}`);

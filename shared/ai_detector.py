@@ -110,6 +110,7 @@ class AIContentDetector:
                 model=_ROBERTA_MODEL,
                 truncation=True,
                 max_length=512,
+                model_kwargs={"low_cpu_mem_usage": True},
             )
             logger.info(
                 "RoBERTa detector loaded: %s (%d params)",
@@ -161,7 +162,7 @@ class AIContentDetector:
 
     @property
     def available(self) -> bool:
-        return self._roberta_pipeline is not None
+        return self._roberta_pipeline is not None or self._gpt2_model is not None
 
     def detect(self, text: str, timeout: float = 120.0) -> float:
         """Run composite AI detection on text.

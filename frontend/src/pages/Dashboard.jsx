@@ -1,5 +1,5 @@
 import PropTypes from "prop-types";
-import React, { Suspense, memo, useCallback, useEffect, useMemo, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { API_BASE } from "../utils/config";
 import { getAuthHeaders, getStoredEmail } from "../utils/auth";
@@ -9,7 +9,6 @@ import useAssignmentDetails from "../hooks/useAssignmentDetails";
 import useSimilarityCompute from "../hooks/useSimilarityCompute";
 import useMatrixViewer from "../hooks/useMatrixViewer";
 import BlindReviewToggle from "../components/BlindReviewToggle";
-const CollusionGraph = React.lazy(() => import("../components/CollusionGraph"));
 import SimilarityMatrix from "../components/SimilarityMatrix";
 import MatrixViewer from "../components/MatrixViewer";
 import "../styles/portal.css";
@@ -39,7 +38,7 @@ function AssignmentCard({ item, active, onClick }) {
           <div className="assignment-title">{item.name}</div>
           <div className="assignment-subtitle">{item.batch_id}</div>
         </div>
-        <span className="assignment-pill">{item.expected_count || 0} expected</span>
+        <span className="assignment-pill">{item.owner_user_id ? "Owned" : "Shared"}</span>
       </div>
       <div className="assignment-meta">
         <span>{formatDate(item.created_at)}</span>
@@ -154,8 +153,6 @@ BatchAnalytics.propTypes = {
   submissions: PropTypes.array.isRequired,
 };
 
-const SUBMISSIONS_PAGE_SIZE = 25;
-
 export default function Dashboard() {
   const navigate = useNavigate();
   const email = getStoredEmail();
@@ -164,8 +161,7 @@ export default function Dashboard() {
   const {
     token, loading, error, setError,
     ownedAssignments, sharedAssignments,
-    selectedId, setSelectedId,
-    selected,
+    selectedId, setSelectedId, setSelected,
     creating, assignmentName, setAssignmentName,
     expectedCount, setExpectedCount,
     renaming, setRenaming,
@@ -177,7 +173,7 @@ export default function Dashboard() {
 
   const details = useAssignmentDetails(token, selectedId, setError, navigate);
   const {
-    submissions, matrix, matrixIds,
+    selected, submissions, matrix, matrixIds,
     refreshing, blindReview, setBlindReview,
     threshold, setThreshold,
     displayLabels, submissionCount,
@@ -198,8 +194,36 @@ export default function Dashboard() {
   }), [stats, submissionCount]);
 
   const [assignmentSearch, setAssignmentSearch] = useState("");
-  const [submissionPage, setSubmissionPage] = useState(0);
-  useEffect(() => { setSubmissionPage(0); }, [selectedId]);
+  const [dueDate, setDueDate] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState(false);
+  const [deadlineEditValue, setDeadlineEditValue] = useState("");
+  const [savingDeadline, setSavingDeadline] = useState(false);
+  useEffect(() => { setEditingDeadline(false); }, [selectedId]);
+
+  const saveDeadline = useCallback(async () => {
+    if (!selectedId || !selected) return;
+    setSavingDeadline(true);
+    try {
+      const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
+        credentials: "include",
+        body: JSON.stringify({ name: selected.name, due_date: deadlineEditValue || null }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Failed to save deadline");
+      }
+      setSelected((s) => s ? { ...s, due_date: deadlineEditValue ? new Date(deadlineEditValue).toISOString() : null } : s);
+      setEditingDeadline(false);
+      showToast("Deadline updated", "success");
+    } catch (e) {
+      showToast(e.message || "Failed to save", "error");
+    } finally {
+      setSavingDeadline(false);
+    }
+  }, [selectedId, selected, deadlineEditValue, setSelected]);
+
   const searchLower = assignmentSearch.trim().toLowerCase();
   const filterBySearch = useCallback(
     (items) =>
@@ -241,10 +265,7 @@ export default function Dashboard() {
             >
               {!selectedId && <option value="">Select an assignment...</option>}
               {ownedAssignments.map((a) => (
-                <option key={a.batch_id} value={a.batch_id}>{a.name} (owned)</option>
-              ))}
-              {sharedAssignments.map((a) => (
-                <option key={a.batch_id} value={a.batch_id}>{a.name} (shared)</option>
+                <option key={a.batch_id} value={a.batch_id}>{a.name}</option>
               ))}
             </select>
             <div className="toolbar-actions">
@@ -258,18 +279,14 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-        <div className="dashboard-hero-stats">
+          <div className="dashboard-hero-stats">
           <div className="dashboard-stat">
             <span>{detailStats.total}</span>
             <small>Assignments</small>
           </div>
           <div className="dashboard-stat">
-            <span>{detailStats.owned}</span>
-            <small>Owned</small>
-          </div>
-          <div className="dashboard-stat">
             <span>{detailStats.submissions}</span>
-            <small>Submissions in view</small>
+            <small>Submissions</small>
           </div>
         </div>
       </section>
@@ -298,18 +315,19 @@ export default function Dashboard() {
           <div className="section-label">Your work</div>
           <h2 className="section-title">Assignments</h2>
 
-          <form onSubmit={createAssignment} className="mini-create-form">
+          <form onSubmit={(e) => createAssignment(e, { due_date: dueDate || undefined }).then(() => { if (dueDate) setDueDate(""); })} className="mini-create-form">
             <input
               value={assignmentName}
               onChange={(e) => setAssignmentName(e.target.value)}
               placeholder="New assignment name"
+              style={{ height: 38 }}
             />
             <input
-              type="number"
-              min="0"
-              value={expectedCount}
-              onChange={(e) => setExpectedCount(e.target.value)}
-              placeholder="Expected submissions"
+              type="datetime-local"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              title="Deadline (optional)"
+              style={{ height: 38 }}
             />
             <button className="button" type="submit" disabled={creating}>
               {creating ? "Creating..." : "Create assignment"}
@@ -342,21 +360,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="assignment-list-block">
-            <div className="list-heading">Shared</div>
-            <div className="assignment-list">
-              {loading
-                ? Array.from({ length: 2 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)
-                : filteredShared.map((item) => (
-                <MemoizedAssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
-              ))}
-              {!loading && filteredShared.length === 0 && (
-                <div className="empty-state">
-                  <div className="empty-state-hint">{searchLower ? "No matches in shared assignments." : "No shared assignments. Ask a teacher to share an access code with you."}</div>
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Shared assignments hidden per request */}
         </aside>
 
         <main className="dashboard-panel dashboard-panel-detail">
@@ -464,11 +468,29 @@ export default function Dashboard() {
               <div className="detail-cards">
                 <div className="detail-card">
                   <span className="detail-label">Access code</span>
-                  <strong className="mono">{selected.access_code}</strong>
-                </div>
-                <div className="detail-card">
-                  <span className="detail-label">Expected</span>
-                  <strong>{selected.expected_count || 0}</strong>
+                  {selected.access_code ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong className="mono">{selected.access_code}</strong>
+                      <button
+                        type="button"
+                        className="button-ghost"
+                        style={{ fontSize: 11, padding: "2px 8px" }}
+                        aria-label={`Copy access code ${selected.access_code}`}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(selected.access_code);
+                            showToast("Access code copied to clipboard", "success");
+                          } catch {
+                            showToast("Could not copy — select it manually", "error");
+                          }
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  ) : (
+                    <strong title="Only the assignment owner can see the access code">—</strong>
+                  )}
                 </div>
                 <div className="detail-card">
                   <span className="detail-label">Submitted</span>
@@ -477,7 +499,12 @@ export default function Dashboard() {
                 {selected.due_date && (
                   <div className="detail-card">
                     <span className="detail-label">Due date</span>
-                    <strong>{new Date(selected.due_date).toLocaleDateString()}</strong>
+                    <strong>
+                      {new Date(selected.due_date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {new Date(selected.due_date) < new Date() && (
+                        <span style={{ marginLeft: 6, fontSize: 11, padding: "2px 6px", borderRadius: 6, background: "var(--danger)", color: "#fff", fontWeight: 600 }}>Overdue</span>
+                      )}
+                    </strong>
                   </div>
                 )}
                 <div className="detail-card">
@@ -492,7 +519,31 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <div className="submissions-table">
+              {selected.owner_user_id && (
+                <div style={{ margin: "0 0 12px", display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <span style={{ color: "var(--text-soft)" }}>Deadline:</span>
+                  {editingDeadline ? (
+                    <>
+                      <input
+                        type="datetime-local"
+                        value={deadlineEditValue}
+                        onChange={(e) => setDeadlineEditValue(e.target.value)}
+                        style={{ fontSize: 13, padding: "3px 6px", borderRadius: 6, border: "1px solid rgba(148,163,184,0.25)" }}
+                      />
+                      <button className="button-secondary button-sm" onClick={saveDeadline} disabled={savingDeadline} style={{ fontSize: 11, padding: "3px 8px" }}>
+                        {savingDeadline ? "Saving..." : "Save"}
+                      </button>
+                      <button className="button-secondary button-sm" onClick={() => setEditingDeadline(false)} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="button-secondary button-sm" onClick={() => { setDeadlineEditValue(selected.due_date ? new Date(selected.due_date).toISOString().slice(0, 16) : ""); setEditingDeadline(true); }} style={{ fontSize: 11, padding: "3px 8px" }}>
+                      {selected.due_date ? "Edit deadline" : "Set deadline"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="submissions-table" style={{ maxHeight: 320, overflowY: 'auto' }}>
                 {refreshing ? (
                   Array.from({ length: 3 }).map((_, i) => (
                     <div key={i} className="skeleton-row">
@@ -508,30 +559,44 @@ export default function Dashboard() {
                     </div>
                   ))
                 ) : submissions.length > 0 ? submissions
-                    .slice(submissionPage * SUBMISSIONS_PAGE_SIZE, (submissionPage + 1) * SUBMISSIONS_PAGE_SIZE)
                     .map((submission, idx) => {
-                  const globalIdx = submissionPage * SUBMISSIONS_PAGE_SIZE + idx;
+                  const globalIdx = idx;
+                  // Find top matches from similarity matrix for this submission
+                  let matchInfo = '';
+                  if (matrix && matrixIds && !blindReview) {
+                    const rollMap = {};
+                    submissions.forEach(s => { rollMap[s.submission_id] = s.roll || s.submission_id; });
+                    const matrixIdx = matrixIds.indexOf(submission.submission_id);
+                    if (matrixIdx >= 0) {
+                      const row = matrix[matrixIdx] || [];
+                      const matches = row
+                        .map((score, j) => ({ score, j }))
+                        .filter(m => m.j !== matrixIdx && m.score > 0.2)
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, 3);
+                      if (matches.length) {
+                        matchInfo = ' with ' + matches.map(m => `${rollMap[matrixIds[m.j]] || '?'} ${(m.score * 100).toFixed(0)}%`).join(', ');
+                      }
+                    }
+                  }
                   const aiScore = submission.ai_score != null ? submission.ai_score : null;
                   let aiBadge = null;
                   if (aiScore != null && aiScore >= 0) {
                     const pct = (aiScore * 100).toFixed(0);
-                    let cls, caveat, marker;
+                    let cls, caveat;
                     if (aiScore > 0.7) {
                       cls = 'ai-badge-red';
                       caveat = 'Likely AI-generated';
-                      marker = '⚠';
                     } else if (aiScore > 0.3) {
                       cls = 'ai-badge-yellow';
                       caveat = 'Possibly AI-assisted';
-                      marker = '~';
                     } else {
                       cls = 'ai-badge-green';
                       caveat = 'Likely human-written';
-                      marker = '✓';
                     }
                     aiBadge = (
                       <span className={`ai-badge ${cls}`} title={caveat} aria-label={`AI score ${pct}% — ${caveat}`}>
-                        <span aria-hidden="true" className="badge-marker">{marker}</span> {pct}%
+                        AI Detection — {pct}%
                       </span>
                     );
                   }
@@ -551,7 +616,7 @@ export default function Dashboard() {
                     // Severity word shown for high bands — text cue independent of color
                     scoreBadge = (
                       <span className={`score-badge ${cls}`} title={ariaLabel} aria-label={ariaLabel}>
-                        {sevLabel ? <><span className="badge-sev">{sevLabel}</span> · </> : null}{pct}%
+                        Similarity — {sevLabel ? <><span className="badge-sev">{sevLabel}</span> · </> : null}{pct}%{matchInfo ? <span className="match-info">{matchInfo}</span> : null}
                       </span>
                     );
                   }
@@ -559,7 +624,7 @@ export default function Dashboard() {
                   return (
                       <div key={submission.submission_id} className="submission-row">
                         <div>
-                          <strong>{blindReview ? `Submission ${globalIdx + 1}` : submission.roll}</strong>
+                          <strong>{blindReview ? `Submission ${globalIdx + 1}` : `ID ${submission.roll}`}</strong>
                           <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
                           <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
                           <div className="small-copy" style={{ color: "var(--text-soft)", fontSize: 12 }}>{fileName}</div>
@@ -577,29 +642,6 @@ export default function Dashboard() {
                     <div className="empty-state-icon">📄</div>
                     <div className="empty-state-title">No submissions yet</div>
                     <div className="empty-state-hint">Share the access code with students so they can submit their work.</div>
-                  </div>
-                )}
-                {submissions.length > SUBMISSIONS_PAGE_SIZE && (
-                  <div className="submission-pagination">
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      disabled={submissionPage === 0}
-                      onClick={() => setSubmissionPage((p) => Math.max(0, p - 1))}
-                    >
-                      ← Prev
-                    </button>
-                    <span>
-                      Page {submissionPage + 1} of {Math.ceil(submissions.length / SUBMISSIONS_PAGE_SIZE)}
-                    </span>
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      disabled={(submissionPage + 1) * SUBMISSIONS_PAGE_SIZE >= submissions.length}
-                      onClick={() => setSubmissionPage((p) => p + 1)}
-                    >
-                      Next →
-                    </button>
                   </div>
                 )}
               </div>
@@ -637,12 +679,6 @@ export default function Dashboard() {
                   <SimilarityMatrix matrix={matrix} labels={displayLabels} onCellClick={handleCellClick} threshold={threshold} />
                 )}
               </div>
-
-              {matrix && displayLabels && matrix.length === displayLabels.length && matrix.length >= 3 && (
-                <Suspense fallback={<div style={{ padding: 20, textAlign: "center" }}>Loading graph...</div>}>
-                  <CollusionGraph matrix={matrix} labels={displayLabels} />
-                </Suspense>
-              )}
 
               {submissions.length > 0 && (
                 <BatchAnalytics submissions={submissions} />

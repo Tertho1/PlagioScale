@@ -532,3 +532,32 @@ Full-stack verification against a rebuilt `docker compose` stack (fresh api/work
 **Bug found & fixed during smoke test:**
 - `portal_submit` access-code path authenticated via Authorization header only — cookie-only sessions got 401. Fixed: `get_optional_user(request, authorization)` now falls back to the httpOnly `access_token` cookie; both call sites updated.
 
+---
+
+## Round 22 — Post-Push UI Bug Fixes ✅ (3/3 done)
+
+User-reported issues from live browser testing on `refactor`.
+
+| # | Issue | Root Cause | Fix | Status |
+|---|---|---|---|---|
+| 22.1 | After login the app doesn't navigate — manual refresh required | `AuthPage.handleSubmit` called raw `setToken()` instead of context `login()` — React state never updated, so `RequireAuth` bounced the user back to `/auth`; refresh worked because boot re-read localStorage | AuthPage now calls `login(token, email)` + `await refreshProfile()` then navigates with `{replace:true}`; `/auth` mount-effect now reacts to `isLoggedIn` context value instead of one-shot `getToken()` | ✅ |
+| 22.2 | Access code not visible to copy/share | Cascade of 22.1 — user was in broken auth state when viewing (backend verified returning `access_code` to owners via `/portal/assignments`) | Fixed by 22.1; plus Dashboard access-code card now shows a **Copy** button (clipboard API + toast feedback) and renders "—" with tooltip for non-owners instead of blank | ✅ |
+| 22.3 | Form asks for roll number but provides no way to enter it | Hard dead-end screen when context `roll` is null — which (via 22.1) hit *every* fresh login since profile loaded only at app boot | Removed dead-ends in StudentSubmit + StudentDashboard: profile roll shown read-only when present; otherwise inline required Roll input (backend already accepts form roll as fallback when profile lacks one) | ✅ |
+
+**Verification:** eslint clean · 30 frontend tests pass · vite build clean · frontend+api images rebuilt and deployed · live check confirms signup-with-roll → `/auth/me` returns full profile (role/roll/name).
+
+---
+
+## Round 22.1 — Dashboard Detail Panel Never Rendered ✅ (2 fixes)
+
+User follow-up: "clicking an assignment shows no info / no code to share."
+
+| # | Issue | Root Cause | Fix | Status |
+|---|---|---|---|---|
+| 22.1a | Clicking a sidebar assignment rendered **no detail panel at all** — no code, no stats, nothing | Wiring severed in the 17.12 hook split: sidebar clicks set only `selectedId`; `useAssignmentDetails` stored the fetched assignment in its own `selected`; but `Dashboard` destructured `selected` from `useAssignments`, where nothing ever sets it → `{selected ? ... : ...}` always took the empty branch | Dashboard now takes `selected` from the details hook (the one populated by the fetch) | ✅ |
+| 22.1b | Assignments created before ownership existed (owner_user_id NULL) landed in "Shared" with code stripped — invisible to their own creator | Round 17 security rules compared `NULL != user_id` | Legacy rows (`owner_user_id IS NULL`) now visible to all authenticated users WITH access code in list + detail; `require_assignment_owner` treats ownerless rows as manageable by any authenticated user; genuine non-owner rows still strip the code (verified live) | ✅ |
+
+**Verification:** ruff + eslint clean · 13 api + 30 frontend tests pass · images rebuilt/deployed · live: owner detail returns `access_code` ✓, non-owner shared list strips it ✓ · deployed bundle contains Copy button ✓.
+
+**Note for user:** assignments you created while logged in as a *different account* will appear under "Shared" without a code — that is by design. Codes show only on assignments owned by the currently logged-in account.
+

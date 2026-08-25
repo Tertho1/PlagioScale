@@ -594,7 +594,7 @@ def get_assignment(batch_id: str) -> Optional[dict]:
         return None
 
 
-def update_assignment(batch_id: str, name: str = None, expected_count: int = None) -> bool:
+def update_assignment(batch_id: str, name: str = None, expected_count: int = None, due_date: "datetime | None" = None, due_date_clear: bool = False) -> bool:
     try:
         with get_session() as session:
             record = session.get(Assignment, batch_id)
@@ -604,6 +604,10 @@ def update_assignment(batch_id: str, name: str = None, expected_count: int = Non
                 record.name = name
             if expected_count is not None:
                 record.expected_count = expected_count
+            if due_date_clear:
+                record.due_date = None
+            elif due_date is not None:
+                record.due_date = due_date
             return True
     except Exception as exc:
         print(f"⚠ Failed updating assignment {batch_id}: {exc}")

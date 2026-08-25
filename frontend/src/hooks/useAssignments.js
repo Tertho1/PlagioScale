@@ -57,7 +57,7 @@ export default function useAssignments() {
     }
   }, [token, navigate]);
 
-  const createAssignment = useCallback(async (event) => {
+  const createAssignment = useCallback(async (event, { due_date } = {}) => {
     event.preventDefault();
     if (!token) return navigate("/auth");
     setCreating(true);
@@ -68,7 +68,7 @@ export default function useAssignments() {
         method: "POST",
         headers,
         credentials: "include",
-        body: JSON.stringify({ name: assignmentName, expected_count: Number(expectedCount) || 0 }),
+        body: JSON.stringify({ name: assignmentName, expected_count: Number(expectedCount) || 0, due_date: due_date || null }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to create assignment");

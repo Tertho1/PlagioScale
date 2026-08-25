@@ -20,8 +20,8 @@ export function AuthProvider({ children }) {
       if (user) {
         setRole(user.role || 'user');
         if (user.email) setEmail(user.email);
-        if (user.roll) setRoll(user.roll);
-        if (user.name) setName(user.name);
+        if (user.roll) setRoll(user.roll); else setRoll(null);
+        if (user.name) setName(user.name); else setName(null);
       }
       setLoading(false);
     })();
@@ -45,6 +45,19 @@ export function AuthProvider({ children }) {
     setToken(newToken, newEmail);
     setTokenState(newToken);
     setEmail(newEmail);
+  }, []);
+
+  // Re-fetch profile (role/roll/name) — call right after login/signup so the
+  // whole app sees fresh identity without a page reload.
+  const refreshProfile = useCallback(async () => {
+    const user = await fetchMe();
+    if (user) {
+      setRole(user.role || 'user');
+      if (user.email) setEmail(user.email);
+      if (user.roll) setRoll(user.roll); else setRoll(null);
+      if (user.name) setName(user.name); else setName(null);
+    }
+    return user;
   }, []);
 
   const logout = useCallback(() => {
@@ -75,6 +88,7 @@ export function AuthProvider({ children }) {
     login,
     logout,
     refresh,
+    refreshProfile,
   };
 
   return (

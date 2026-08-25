@@ -1450,6 +1450,14 @@ a {
   white-space: nowrap;
   border: 1px solid;
 }
+.match-info {
+  display: block;
+  font-weight: 400;
+  font-size: 0.66rem;
+  white-space: normal;
+  margin-top: 2px;
+  opacity: 0.85;
+}
 .score-badge-blue {
   background: #dbeafe;
   color: #1e40af;

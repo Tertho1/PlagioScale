@@ -85,6 +85,9 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | Theme flash prevention | Blocking inline script in index.html applies `data-theme` before first paint (Round 21) |
 | Cookie-auth on submit | `get_optional_user` checks Authorization header then httpOnly cookie — found via live E2E smoke test (Round 21 addendum) |
 | Live smoke verified | 17/17 behaviors: HMAC CSRF, password rules, cookie-only submit, resubmission file cleanup, field stripping, matrix symmetry, PDF magic bytes, auth gates (Round 21) |
+| Login flow | AuthPage must use context `login()` + `refreshProfile()` — never raw `setToken()` (Round 22 regression lesson) |
+| Roll fallback | Profile roll shown read-only; inline manual roll input appears when profile lacks one — no dead-end screens (Round 22) |
+| Access code UI | Copy-to-clipboard button on owner's detail card; "—" tooltip for non-owners (Round 22) |
 
 ## Known Bugs (audit July 2026) — All Fixed ✅
 
@@ -134,7 +137,7 @@ grafana/             # Pre-provisioned dashboards
 **`main` branch — stable, demo-ready.**
 All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests ✅ — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
 
-**`refactor` branch — active.** Round 16 complete (29 items) ✅ — Round 17 security audit complete (14/14 done) ✅ — Round 18 complete (11 items) ✅ — Round 19 complete (29 items) ✅ — Round 20 complete (23 items) ✅ — Round 21 UI accessibility complete (7 items) ✅ — 160 tests ✅.
+**`refactor` branch — active.** Round 16 complete (29 items) ✅ — Round 17 security audit complete (14/14 done) ✅ — Round 18 complete (11 items) ✅ — Round 19 complete (29 items) ✅ — Round 20 complete (23 items) ✅ — Round 21 UI accessibility complete (7 items + live E2E smoke 17/17) ✅ — Round 22 post-push UI bug fixes (3 items) ✅ — 183 tests ✅.
 
 ## Round 16 — Refactoring & Frontend Improvements ✅ (on `refactor`)
 

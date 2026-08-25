@@ -3,7 +3,6 @@ import { Routes, Route, Link } from 'react-router-dom'
 const AuthPage = React.lazy(() => import('./pages/AuthPage'))
 const Dashboard = React.lazy(() => import('./pages/Dashboard'))
 const StudentSubmit = React.lazy(() => import('./pages/StudentSubmit'))
-const StudentDashboard = React.lazy(() => import('./pages/StudentDashboard'))
 const AdminPage = React.lazy(() => import('./pages/AdminPage'))
 const CrossBatchPage = React.lazy(() => import('./pages/CrossBatchPage'))
 const StudentComparison = React.lazy(() => import('./pages/StudentComparison'))
@@ -60,7 +59,6 @@ function NavBar(){
         {token ? (
           <>
             <Link to="/dashboard">Dashboard</Link>
-            <Link to="/student/dashboard">My Dashboard</Link>
             <Link to="/cross-batch">Cross-Batch</Link>
             <div className="nav-tools" ref={toolsRef}>
               <button type="button" className="nav-link" onClick={() => setShowTools(!showTools)} aria-expanded={showTools} aria-haspopup="true">Tools</button>
@@ -168,7 +166,6 @@ export default function App() {
           <Route path="/auth" element={<AuthPage/>} />
           <Route path="/dashboard" element={<RequireAuth><Dashboard/></RequireAuth>} />
           <Route path="/student" element={<StudentSubmit/>} />
-          <Route path="/student/dashboard" element={<RequireAuth><StudentDashboard/></RequireAuth>} />
           <Route path="/admin" element={<RequireRole role="admin"><AdminPage/></RequireRole>} />
           <Route path="/cross-batch" element={<RequireAuth><CrossBatchPage/></RequireAuth>} />
           <Route path="/student/comparison/:submissionId" element={<RequireAuth><StudentComparison/></RequireAuth>} />
