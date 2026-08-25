@@ -80,6 +80,11 @@ PlagioScale is a cloud-native, microservices-based plagiarism detection platform
 | Worker notifications | Fire-and-forget daemon threads — never block the processing loop (Round 20) |
 | API field hygiene | `_public_submission()` strips file_path/embedding_json from all submission responses (Round 20) |
 | File cleanup | `delete_assignment` removes uploaded files from disk after DB commit (Round 20) |
+| Similarity bands | CSS classes `.smatrix-band-1..5` (light pastels + dark translucent variants) — luminance steps double as CVD cue; no inline JS colors (Round 21) |
+| Badge semantics | AI badges carry ✓/~/⚠ markers; score badges show severity word on High/Very-high; all text-on-color combos AA-compliant in both themes (Round 21) |
+| Theme flash prevention | Blocking inline script in index.html applies `data-theme` before first paint (Round 21) |
+| Cookie-auth on submit | `get_optional_user` checks Authorization header then httpOnly cookie — found via live E2E smoke test (Round 21 addendum) |
+| Live smoke verified | 17/17 behaviors: HMAC CSRF, password rules, cookie-only submit, resubmission file cleanup, field stripping, matrix symmetry, PDF magic bytes, auth gates (Round 21) |
 
 ## Known Bugs (audit July 2026) — All Fixed ✅
 
@@ -129,7 +134,7 @@ grafana/             # Pre-provisioned dashboards
 **`main` branch — stable, demo-ready.**
 All 107 audit issues ✅ — All 15 Round 12 features ✅ — All 15 Round 13 features ✅ — Round 14 CI/CD ✅ — 171 tests ✅ — 6 Self-Healing mechanisms — E2E verified — Stress test: 28ms avg latency — CI + CD ready
 
-**`refactor` branch — active.** Round 16 complete (29 items) ✅ — Round 17 security audit complete (14/14 done) ✅ — Round 18 complete (11 items) ✅ — Round 19 complete (29 items) ✅ — Round 20 complete (23 items) ✅ — 160 tests ✅.
+**`refactor` branch — active.** Round 16 complete (29 items) ✅ — Round 17 security audit complete (14/14 done) ✅ — Round 18 complete (11 items) ✅ — Round 19 complete (29 items) ✅ — Round 20 complete (23 items) ✅ — Round 21 UI accessibility complete (7 items) ✅ — 160 tests ✅.
 
 ## Round 16 — Refactoring & Frontend Improvements ✅ (on `refactor`)
 

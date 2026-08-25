@@ -197,10 +197,10 @@ export default function StudentDashboard() {
                       <li key={i}>Roll {m.roll}: {(m.max_similarity * 100).toFixed(1)}% similar</li>
                     ))}
                   </ul>
-                  <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Consider revising before submitting.</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-soft)', marginTop: 6 }}>Consider revising before submitting.</div>
                 </>
               ) : (
-                <div style={{ color: '#059669' }}>No significant similarity found with existing submissions.</div>
+                <div style={{ color: 'var(--success)' }}>No significant similarity found with existing submissions.</div>
               )}
             </div>
           )}

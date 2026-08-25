@@ -7,6 +7,21 @@
 	box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
 }
 
+[data-theme="dark"] .smatrix-root {
+	background: linear-gradient(180deg, rgba(30,41,59,.92), rgba(22,32,50,.88));
+	box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+
+[data-theme="dark"] .smatrix-header {
+	background: rgba(96,165,250,.14);
+	color: #dbeafe;
+}
+
+[data-theme="dark"] .smatrix-rowheader {
+	background: rgba(148,163,184,.12);
+	color: #e2e8f0;
+}
+
 .smatrix-grid {
 	display: grid;
 	gap: 4px;
@@ -40,11 +55,34 @@
 	align-items: center;
 	justify-content: center;
 	font-size: 11px;
-	color: #111827;
 	cursor: pointer;
 	border-radius: 9px;
 	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55);
 	transition: transform 0.15s ease, filter 0.15s ease, opacity 0.2s ease;
+}
+
+/* Similarity bands — light theme: pastel fills + dark text (AA ≥ 4.5:1).
+   Luminance steps down as severity rises = second cue for color-blind users. */
+.smatrix-band-1 { background: #e0efff; color: #1e3a8a; }
+.smatrix-band-2 { background: #d3f4df; color: #14532d; }
+.smatrix-band-3 { background: #fdeeb0; color: #713f12; }
+.smatrix-band-4 { background: #fed9b7; color: #7c2d12; }
+.smatrix-band-5 { background: #fecaca; color: #7f1d1d; }
+
+/* Dark theme: deep translucent fills + bright text — no glare against dark chrome */
+[data-theme="dark"] .smatrix-band-1 { background: rgba(59,130,246,.28); color: #dbeafe; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+[data-theme="dark"] .smatrix-band-2 { background: rgba(34,197,94,.26); color: #dcfce7; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+[data-theme="dark"] .smatrix-band-3 { background: rgba(202,138,4,.32); color: #fef3c7; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+[data-theme="dark"] .smatrix-band-4 { background: rgba(234,88,12,.34); color: #ffedd5; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+[data-theme="dark"] .smatrix-band-5 { background: rgba(220,38,38,.38); color: #fee2e2; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+
+/* Legend swatches reuse band fills */
+.smatrix-legend-swatch.smatrix-band-1,
+.smatrix-legend-swatch.smatrix-band-2,
+.smatrix-legend-swatch.smatrix-band-3,
+.smatrix-legend-swatch.smatrix-band-4,
+.smatrix-legend-swatch.smatrix-band-5 {
+	color: transparent;
 }
 
 .smatrix-cell:hover {

@@ -493,3 +493,42 @@
 | 20.22 | `<a href>` → `<Link>` in StudentDashboard view link (full reload) | 🟢 LOW | UX | ✅ SPA navigation |
 | 20.23 | Move NavBar dropdown inline styles to CSS classes | 🟢 LOW | Cleanup | ✅ `.nav-tools`, `.nav-tools-menu`, `.nav-tools-item` + role=menuitem |
 
+---
+
+## Round 21 — UI Accessibility & Color System Hardening ✅ (7/7 done)
+
+Based on a design research pass (2026 SaaS dashboard trends, Turnitin color conventions, WCAG 2.2 + CVD guidance).
+
+| # | Task | Priority | Area | Status |
+|---|---|---|---|---|
+| 21.1 | AA-safe similarity band palette with luminance steps (CVD second cue) | 🔴 HIGH | A11y | ✅ `.smatrix-band-1..5` classes; darker fills at higher severity |
+| 21.2 | Matrix cells driven by CSS band classes instead of inline JS colors | 🟠 MEDIUM | Quality | ✅ `scoreToColor()` deleted; legend shares same classes |
+| 21.3 | Dark-theme variants for matrix cells, root panel, headers, analytics bars | 🔴 HIGH | UX | ✅ `[data-theme="dark"]` overrides — deep translucent fills, no glare |
+| 21.4 | Fix WCAG contrast failures on role/severity badges (white-on-amber 2.2:1) | 🔴 HIGH | A11y | ✅ Darkened to 700-level fills (#b45309, #15803d, #b91c1c…) |
+| 21.5 | Non-color cues: AI badge markers (✓/~ /⚠), severity word on High/Very-high score badges, enriched aria-labels | 🔴 HIGH | A11y | ✅ Color never the only channel (WCAG 1.4.1) |
+| 21.6 | Tokenize remaining hardcoded hex in JSX inline styles → var(--text-soft)/var(--danger)/var(--success) | 🟠 MEDIUM | Quality | ✅ 12 occurrences replaced across 4 files |
+| 21.7 | Pre-paint theme script in index.html — kills dark-mode flash | 🟢 LOW | UX | ✅ Blocking inline script before app bundle |
+
+**Deferred from research:** command palette (Ctrl+K), oklch color space, radius/type-scale tightening — optional polish, not accessibility issues. CollusionGraph canvas nodeColor stays literal hex (canvas fillStyle can't use CSS vars).
+
+---
+
+## Round 21 Addendum — Live E2E Smoke Test ✅ (17/17 behaviors verified)
+
+Full-stack verification against a rebuilt `docker compose` stack (fresh api/worker/frontend images).
+
+| Check | Result |
+|---|---|
+| `/health` reports healthy; frontend serves app shell | ✅ |
+| Weak password → 400; strong signup → httpOnly access_token + 64-char HMAC csrf cookie | ✅ |
+| State-changing POST without CSRF → 403; wrong CSRF → 403; valid HMAC+cookie → 200 | ✅ |
+| Create assignment returns batch_id + access_code | ✅ |
+| File submit via access code with **cookie-only auth** (no Authorization header) | ✅ after fix below |
+| Duplicate roll resubmission replaces old row + cleans old file (allow_resubmission) | ✅ by design |
+| Submission detail strips file_path/embedding_json | ✅ |
+| compute-similarity enqueues; worker completes; matrix 2×2 symmetric; PDF report (%PDF magic, 1.4KB+) | ✅ |
+| Unauthenticated detail / submit → 401; worker logs clean | ✅ |
+
+**Bug found & fixed during smoke test:**
+- `portal_submit` access-code path authenticated via Authorization header only — cookie-only sessions got 401. Fixed: `get_optional_user(request, authorization)` now falls back to the httpOnly `access_token` cookie; both call sites updated.
+

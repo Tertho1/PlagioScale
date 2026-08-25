@@ -91,7 +91,6 @@ const BatchAnalytics = memo(function BatchAnalytics({ submissions }) {
   const maxScore = scores.length ? (Math.max(...scores) * 100).toFixed(1) : '—';
 
   const bands = ['0–20%', '20–40%', '40–60%', '60–80%', '80–100%'];
-  const bandColors = ['#93c5fd', '#86efac', '#fde68a', '#fdba74', '#fca5a5'];
 
   return (
     <div className="batch-analytics">
@@ -122,7 +121,7 @@ const BatchAnalytics = memo(function BatchAnalytics({ submissions }) {
             {scoreHist.map((count, i) => (
               <div key={i} className="analytics-bar-col">
                 <div className="analytics-bar-wrapper">
-                  <div className="analytics-bar" style={{ height: `${(count / maxCount) * 100}%`, background: bandColors[i] }} />
+                  <div className={`analytics-bar analytics-band-${i + 1}`} style={{ height: `${(count / maxCount) * 100}%` }} />
                 </div>
                 <div className="analytics-bar-label">{bands[i]}</div>
                 <div className="analytics-bar-count">{count}</div>
@@ -138,7 +137,7 @@ const BatchAnalytics = memo(function BatchAnalytics({ submissions }) {
             {aiHist.map((count, i) => (
               <div key={i} className="analytics-bar-col">
                 <div className="analytics-bar-wrapper">
-                  <div className="analytics-bar" style={{ height: `${(count / maxCount) * 100}%`, background: bandColors[i] }} />
+                  <div className={`analytics-bar analytics-band-${i + 1}`} style={{ height: `${(count / maxCount) * 100}%` }} />
                 </div>
                 <div className="analytics-bar-label">{bands[i]}</div>
                 <div className="analytics-bar-count">{count}</div>
@@ -423,7 +422,7 @@ export default function Dashboard() {
                   <button className="button-secondary" type="button" onClick={() => { setRenameValue(selected.name); setRenaming(true); }}>
                     Rename
                   </button>
-                  <button className="button-secondary" type="button" onClick={() => setConfirmDelete(selected.name)} style={{ color: "#dc2626" }}>
+                  <button className="button-secondary" type="button" onClick={() => setConfirmDelete(selected.name)} style={{ color: "var(--danger)" }}>
                     Delete
                   </button>
                 </>
@@ -435,7 +434,7 @@ export default function Dashboard() {
             <div className="modal-overlay" onClick={() => setConfirmDelete("")} role="dialog" aria-modal="true">
               <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
                 <h3 style={{ margin: "0 0 8px" }}>Delete assignment?</h3>
-                <p style={{ margin: "0 0 16px", color: "#64748b" }}>
+                <p style={{ margin: "0 0 16px", color: "var(--text-soft)" }}>
                   This will permanently delete &ldquo;<strong>{selected.name}</strong>&rdquo; and all its submissions and similarity data. Type the assignment name to confirm.
                 </p>
                 <input
@@ -447,7 +446,7 @@ export default function Dashboard() {
                 />
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button className="button-secondary" onClick={() => setConfirmDelete("")}>Cancel</button>
-                  <button className="button" onClick={handleDelete} disabled={confirmDelete !== selected.name || deleting} style={{ background: "#dc2626", color: "#fff" }}>
+                  <button className="button" onClick={handleDelete} disabled={confirmDelete !== selected.name || deleting} style={{ background: "var(--danger)", color: "#fff" }}>
                     {deleting ? "Deleting..." : "Delete"}
                   </button>
                 </div>
@@ -458,7 +457,7 @@ export default function Dashboard() {
           {selected ? (
             <>
               {refreshing && (
-                <div className="status-box" style={{ margin: "0 0 12px", padding: "6px 12px", fontSize: 13, color: "#64748b" }}>
+                <div className="status-box" style={{ margin: "0 0 12px", padding: "6px 12px", fontSize: 13, color: "var(--text-soft)" }}>
                   Refreshing data...
                 </div>
               )}
@@ -516,25 +515,45 @@ export default function Dashboard() {
                   let aiBadge = null;
                   if (aiScore != null && aiScore >= 0) {
                     const pct = (aiScore * 100).toFixed(0);
-                    let cls, caveat;
+                    let cls, caveat, marker;
                     if (aiScore > 0.7) {
                       cls = 'ai-badge-red';
                       caveat = 'Likely AI-generated';
+                      marker = '⚠';
                     } else if (aiScore > 0.3) {
                       cls = 'ai-badge-yellow';
                       caveat = 'Possibly AI-assisted';
+                      marker = '~';
                     } else {
                       cls = 'ai-badge-green';
                       caveat = 'Likely human-written';
+                      marker = '✓';
                     }
-                    aiBadge = <span className={`ai-badge ${cls}`} title={caveat}>{pct}%</span>;
+                    aiBadge = (
+                      <span className={`ai-badge ${cls}`} title={caveat} aria-label={`AI score ${pct}% — ${caveat}`}>
+                        <span aria-hidden="true" className="badge-marker">{marker}</span> {pct}%
+                      </span>
+                    );
                   }
                   const score = submission.plagiarism_score;
                   let scoreBadge = null;
                   if (score != null) {
                     const pct = (score * 100).toFixed(1);
-                    const cls = score > 0.8 ? 'score-badge-red' : score > 0.6 ? 'score-badge-orange' : score > 0.4 ? 'score-badge-yellow' : score > 0.2 ? 'score-badge-green' : 'score-badge-blue';
-                    scoreBadge = <span className={`score-badge ${cls}`} title={`Similarity: ${pct}%`}>{pct}%</span>;
+                    let cls, sevLabel = '';
+                    if (score > 0.8) { cls = 'score-badge-red'; sevLabel = 'Very high'; }
+                    else if (score > 0.6) { cls = 'score-badge-orange'; sevLabel = 'High'; }
+                    else if (score > 0.4) { cls = 'score-badge-yellow'; }
+                    else if (score > 0.2) { cls = 'score-badge-green'; }
+                    else { cls = 'score-badge-blue'; }
+                    const ariaLabel = sevLabel
+                      ? `Similarity ${sevLabel.toLowerCase()}: ${pct}%`
+                      : `Similarity: ${pct}%`;
+                    // Severity word shown for high bands — text cue independent of color
+                    scoreBadge = (
+                      <span className={`score-badge ${cls}`} title={ariaLabel} aria-label={ariaLabel}>
+                        {sevLabel ? <><span className="badge-sev">{sevLabel}</span> · </> : null}{pct}%
+                      </span>
+                    );
                   }
                     const fileName = submission.original_filename || (submission.filename ? submission.filename.split("_").slice(3).join("_") : "—");
                   return (
@@ -543,7 +562,7 @@ export default function Dashboard() {
                           <strong>{blindReview ? `Submission ${globalIdx + 1}` : submission.roll}</strong>
                           <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
                           <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
-                          <div className="small-copy" style={{ color: "#64748b", fontSize: 12 }}>{fileName}</div>
+                          <div className="small-copy" style={{ color: "var(--text-soft)", fontSize: 12 }}>{fileName}</div>
                         </div>
                         <div className="row-meta">
                           {scoreBadge}

@@ -2,12 +2,14 @@ import PropTypes from "prop-types";
 import React, { memo, useCallback } from 'react'
 import './SimilarityMatrix.css'
 
-function scoreToColor(v){
-  if (v < 0.2) return 'rgb(220, 240, 255)'
-  if (v < 0.4) return 'rgb(180, 220, 180)'
-  if (v < 0.6) return 'rgb(255, 230, 150)'
-  if (v < 0.8) return 'rgb(255, 180, 120)'
-  return 'rgb(255, 100, 100)'
+// Band index drives CSS classes (light + dark variants live in SimilarityMatrix.css).
+// Darker fills at higher bands give a second, luminance-based cue for color-blind users.
+function bandIndex(v){
+  if (v < 0.2) return 1
+  if (v < 0.4) return 2
+  if (v < 0.6) return 3
+  if (v < 0.8) return 4
+  return 5
 }
 
 function scoreLabel(v){
@@ -20,17 +22,17 @@ function scoreLabel(v){
 
 const ScoreLegend = memo(function ScoreLegend(){
   const bands = [
-    { label: '0–20%', color: 'rgb(220, 240, 255)', desc: 'Very low' },
-    { label: '20–40%', color: 'rgb(180, 220, 180)', desc: 'Low' },
-    { label: '40–60%', color: 'rgb(255, 230, 150)', desc: 'Medium' },
-    { label: '60–80%', color: 'rgb(255, 180, 120)', desc: 'High' },
-    { label: '80–100%', color: 'rgb(255, 100, 100)', desc: 'Very high' },
+    { label: '0–20%', desc: 'Very low', band: 1 },
+    { label: '20–40%', desc: 'Low', band: 2 },
+    { label: '40–60%', desc: 'Medium', band: 3 },
+    { label: '60–80%', desc: 'High', band: 4 },
+    { label: '80–100%', desc: 'Very high', band: 5 },
   ]
   return (
     <div className="smatrix-legend" role="img" aria-label="Similarity score legend">
       {bands.map(b => (
         <div key={b.label} className="smatrix-legend-item">
-          <span className="smatrix-legend-swatch" style={{ background: b.color }} />
+          <span className={`smatrix-legend-swatch smatrix-band-${b.band}`} />
           <span className="smatrix-legend-label">{b.label}</span>
         </div>
       ))}
@@ -90,18 +92,19 @@ export default function SimilarityMatrix({matrix, labels, onCellClick, maxDispla
               {row.map((cell, j)=> {
                 const isDiag = i === j;
                 const belowThreshold = !isDiag && threshold > 0 && cell < threshold;
+                const band = bandIndex(cell);
                 return (
                   <div
                     key={`c-${i}-${j}`}
                     data-cell={`${i}-${j}`}
-                    className={`smatrix-cell ${belowThreshold ? 'smatrix-cell-dimmed' : ''}`}
+                    className={`smatrix-cell smatrix-band-${band} ${belowThreshold ? 'smatrix-cell-dimmed' : ''}`}
                     role="gridcell"
                     tabIndex={isDiag ? -1 : 0}
                     title={`${labels[i]} ↔ ${labels[j]}: ${(cell * 100).toFixed(1)}% — ${scoreLabel(cell)}`}
-                    aria-label={`Similarity ${labels[i]} to ${labels[j]}: ${(cell * 100).toFixed(1)}%`}
+                    aria-label={`Similarity ${labels[i]} to ${labels[j]}: ${(cell * 100).toFixed(1)} percent, ${scoreLabel(cell)}`}
                     onClick={() => !belowThreshold && onCellClick && onCellClick(i, j, cell)}
                     onKeyDown={(e) => !belowThreshold && handleCellKey(e, i, j, cell)}
-                    style={belowThreshold ? { opacity: 0.25 } : { background: scoreToColor(cell) }}
+                    style={belowThreshold ? { opacity: 0.25 } : undefined}
                   >
                       {isDiag ? '—' : cell.toFixed(2)}
                   </div>

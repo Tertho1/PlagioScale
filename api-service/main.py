@@ -588,15 +588,17 @@ def verify_worker_secret(x_worker_secret: str | None = Header(default=None, alia
     return x_worker_secret == WORKER_SECRET
 
 
-def get_optional_user(authorization: str | None = Header(default=None)) -> dict | None:
-    """Resolve current user from JWT if present, return None otherwise."""
-    if not authorization:
+def get_optional_user(request: Request, authorization: str | None = Header(default=None)) -> dict | None:
+    """Resolve current user from JWT if present (Authorization header or httpOnly cookie), else None."""
+    token_src = None
+    auth = authorization or ""
+    if auth.startswith("Bearer "):
+        token_src = auth[len("Bearer "):].strip()
+    if not token_src:
+        token_src = request.cookies.get("access_token")
+    if not token_src:
         return None
-    prefix = "Bearer "
-    if not authorization.startswith(prefix):
-        return None
-    token = authorization[len(prefix):].strip()
-    user_id = decode_access_token(token)
+    user_id = decode_access_token(token_src)
     if not user_id:
         return None
     user = get_user_by_id(user_id) if db_ready else {"user_id": user_id}
@@ -1066,7 +1068,7 @@ async def portal_submit(
         batch_id = assignment["batch_id"]
         # Require authentication for access-code submissions too
         auth_header = request.headers.get("authorization", "")
-        user_obj = get_optional_user(auth_header) if auth_header else None
+        user_obj = get_optional_user(request, auth_header) if (auth_header or request.cookies.get("access_token")) else None
         if not user_obj:
             raise HTTPException(status_code=401, detail="Authentication required to submit")
         user_id = user_obj.get("user_id")
@@ -1077,7 +1079,7 @@ async def portal_submit(
         if not assignment:
             raise HTTPException(status_code=400, detail="Invalid batch_id")
         auth_header = request.headers.get("authorization", "")
-        user_obj = get_optional_user(auth_header) if auth_header else None
+        user_obj = get_optional_user(request, auth_header) if (auth_header or request.cookies.get("access_token")) else None
         user_id = user_obj.get("user_id") if user_obj else None
     else:
         raise HTTPException(status_code=400, detail="Provide access_code or batch_id")

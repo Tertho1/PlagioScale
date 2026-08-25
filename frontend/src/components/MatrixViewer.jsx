@@ -195,7 +195,7 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
         <div className="grid-2" style={{marginTop:18}}>
           <div className="surface" style={{padding:18, background:'rgba(255,255,255,.92)'}}>
             <div className="field-title" style={{marginBottom:4}}>Left submission</div>
-            <div style={{fontSize:13, color:'#475569', marginBottom:8, lineHeight:1.6}}>
+            <div style={{fontSize:13, color:'var(--text-soft)', marginBottom:8, lineHeight:1.6}}>
               <div><strong>Roll:</strong> {leftSubmission?.roll || "—"}</div>
               <div><strong>Name:</strong> {leftSubmission?.name || "—"}</div>
               <div><strong>File:</strong> {leftSubmission?.original_filename || (leftSubmission?.filename ? leftSubmission.filename.split("_").slice(3).join("_") : "—")}</div>
@@ -204,7 +204,7 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
           </div>
           <div className="surface" style={{padding:18, background:'rgba(255,255,255,.92)'}}>
             <div className="field-title" style={{marginBottom:4}}>Right submission</div>
-            <div style={{fontSize:13, color:'#475569', marginBottom:8, lineHeight:1.6}}>
+            <div style={{fontSize:13, color:'var(--text-soft)', marginBottom:8, lineHeight:1.6}}>
               <div><strong>Roll:</strong> {rightSubmission?.roll || "—"}</div>
               <div><strong>Name:</strong> {rightSubmission?.name || "—"}</div>
               <div><strong>File:</strong> {rightSubmission?.original_filename || (rightSubmission?.filename ? rightSubmission.filename.split("_").slice(3).join("_") : "—")}</div>
@@ -218,14 +218,14 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
           {annotations.length > 0 ? (
             <div style={{marginBottom:12}}>
               {annotations.map(a => (
-                <div key={a.id} style={{padding:'8px 12px', borderRadius:8, background:'rgba(255,255,255,.7)', marginBottom:6, fontSize:13, display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+                <div key={a.id} style={{padding:'8px 12px', borderRadius:8, background:'var(--surface-muted)', marginBottom:6, fontSize:13, display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
                   <div>{a.content}</div>
-                  <button className="button-ghost" onClick={() => handleDeleteAnnotation(a.id)} style={{fontSize:11, padding:'2px 6px', color:'#dc2626'}}>Remove</button>
+                  <button className="button-ghost" onClick={() => handleDeleteAnnotation(a.id)} style={{fontSize:11, padding:'2px 6px', color:'var(--danger)'}}>Remove</button>
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{fontSize:13, color:'#64748b', marginBottom:10}}>No annotations yet.</div>
+            <div style={{fontSize:13, color:'var(--text-soft)', marginBottom:10}}>No annotations yet.</div>
           )}
           <div style={{display:'flex', gap:8}}>
             <input
