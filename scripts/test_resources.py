@@ -6,6 +6,7 @@ Run: python scripts/demo_resources.py
 """
 
 import json
+import os
 import subprocess
 import sys
 
@@ -17,19 +18,18 @@ def pause(msg="\nPress Enter to continue..."):
 
 
 def run(cmd):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
-    return r.stdout.strip()
+    with os.popen(cmd) as f:
+        return f.read().strip()
 
 
 def get_containers():
-    raw = run(
-        'docker ps --format '
-        '{"name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}"}'
-    )
+    raw = run('docker ps --format "{{.Names}}~{{.Image}}~{{.Status}}"')
     containers = []
     for line in raw.splitlines():
         if line.strip():
-            containers.append(json.loads(line))
+            parts = line.split("~")
+            if len(parts) >= 3:
+                containers.append({"name": parts[0], "image": parts[1], "status": parts[2]})
     return containers
 
 
@@ -47,14 +47,14 @@ def get_inspect(name):
         "restart": host.get("RestartPolicy", {}).get("Name", "no"),
         "max_restarts": host.get("RestartPolicy", {}).get("MaximumRetryCount", 0),
         "health_cmd": (hc.get("Test", [""])[-1] if hc.get("Test") else "none"),
-        "health_interval": hc.get("Interval", 0) // 1_000_000_000,  # ns → s
+        "health_interval": hc.get("Interval", 0) // 1_000_000_000,  # ns -> s
         "image": c.get("Config", {}).get("Image", "?"),
     }
 
 
 def main():
     print("=" * 70)
-    print("  PLAGIOSCALE — RESOURCE ISOLATION DEMO")
+    print("  PLAGIOSCALE - RESOURCE ISOLATION DEMO")
     print("=" * 70)
 
     # --- Step 1: Resource Table ---
@@ -62,7 +62,7 @@ def main():
     print("-" * 70)
     containers = get_containers()
     print(f"  {'Container':<22} {'CPU':>6} {'Memory':>8} {'Restart':<15}")
-    print(f"  {'─' * 22} {'─' * 6} {'─' * 8} {'─' * 15}")
+    print(f"  {'-' * 22} {'-' * 6} {'-' * 8} {'-' * 15}")
     total_cpu = 0.0
     total_mem = 0.0
     for c in sorted(containers, key=lambda x: x["name"]):
@@ -74,7 +74,7 @@ def main():
         total_cpu += cpu
         total_mem += mem
         print(f"  {short:<22} {cpu:>4.2f}   {mem:>5.0f}MB   {restart}")
-    print(f"  {'─' * 22} {'─' * 6} {'─' * 8}")
+    print(f"  {'-' * 22} {'-' * 6} {'-' * 8}")
     print(f"  {'TOTAL':<22} {total_cpu:>4.2f}   {total_mem:>5.0f}MB")
     pause()
 
@@ -82,7 +82,7 @@ def main():
     print("\n[2/3] HEALTH CHECK CONFIGURATION")
     print("-" * 70)
     print(f"  {'Container':<22} {'Interval':<10} {'Command'}")
-    print(f"  {'─' * 22} {'─' * 10} {'─' * 40}")
+    print(f"  {'-' * 22} {'-' * 10} {'-' * 40}")
     for c in sorted(containers, key=lambda x: x["name"]):
         short = c["name"].replace("plagioscale-", "")
         info = get_inspect(c["name"])
@@ -110,24 +110,24 @@ def main():
     print(f"    Total Memory: {total_mem:.0f} MB")
     print()
     print("  KEY ISOLATION POINTS:")
-    print("  • Worker gets 2GB RAM — enough for ML models (SBERT + RoBERTa + GPT2)")
-    print("  • API gets 0.5 CPU — sufficient for request handling")
-    print("  • Autoscaler gets only 0.1 CPU — lightweight monitoring")
-    print("  • No container can exceed its allocation")
-    print("  • Restart policy: all set to 'unless-stopped' (auto-restart on crash)")
+    print("  * Worker gets 2GB RAM - enough for ML models (SBERT + RoBERTa + GPT2)")
+    print("  * API gets 0.5 CPU - sufficient for request handling")
+    print("  * Autoscaler gets only 0.1 CPU - lightweight monitoring")
+    print("  * No container can exceed its allocation")
+    print("  * Restart policy: all set to 'unless-stopped' (auto-restart on crash)")
     print()
     print("  DEMONSTRATION:")
     print("  Try running a memory-heavy process inside a container:")
     print("    docker exec plagioscale-worker-1 python -c 'x = bytearray(3*1024*1024*1024)'")
-    print("  → Will be killed by Docker OOM killer (memory limit enforced)")
+    print("  -> Will be killed by Docker OOM killer (memory limit enforced)")
     print()
     print("=" * 70)
     print("  SUMMARY:")
-    print("  • 11 containers, each with CPU + memory limits")
-    print("  • All have health checks (Docker monitors liveness)")
-    print("  • All auto-restart on failure (unless-stopped)")
-    print("  • Resource isolation prevents cascading failures")
-    print("  • Autoscaler respects limits when creating new workers")
+    print("  * 11 containers, each with CPU + memory limits")
+    print("  * All have health checks (Docker monitors liveness)")
+    print("  * All auto-restart on failure (unless-stopped)")
+    print("  * Resource isolation prevents cascading failures")
+    print("  * Autoscaler respects limits when creating new workers")
     print("=" * 70)
 
 

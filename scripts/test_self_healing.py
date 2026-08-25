@@ -6,20 +6,21 @@ Run: python scripts/demo_self_healing.py
 """
 
 import atexit
+import os
 import subprocess
 import sys
 import time
 
 import requests
 
-API = "http://localhost:8000"
+API = os.getenv("API_URL", "http://localhost:3050/api")
 POSTGRES_CONTAINER = "plagioscale-postgres"
 
 stopped_services = []
 
 
 def ensure_restore():
-    """Restart any services we stopped — runs even on Ctrl+C."""
+    """Restart any services we stopped - runs even on Ctrl+C."""
     for svc in stopped_services:
         print(f"\n  [restore] Restarting {svc}...")
         subprocess.run(f"docker start {svc}", shell=True, capture_output=True, timeout=15)
@@ -64,14 +65,14 @@ def get_worker_logs(n=10):
 
 def main():
     print("=" * 70)
-    print("  PLAGIOSCALE — SELF-HEALING DEMO")
+    print("  PLAGIOSCALE - SELF-HEALING DEMO")
     print("=" * 70)
     print()
     print("  This demo shows how the system recovers when a critical service fails.")
     print("  We'll stop PostgreSQL, watch the API degrade, then restart and recover.")
     print()
-    print("  ⚠  WARNING: This will briefly interrupt the running stack.")
-    print("  ⚠  All services will be auto-restored at the end.")
+    print("  !!  WARNING: This will briefly interrupt the running stack.")
+    print("  !!  All services will be auto-restored at the end.")
     print()
 
     # --- Step 1: Healthy State ---
@@ -80,7 +81,7 @@ def main():
     h = health()
     print(f"  /health response: {h.get('status', 'unknown')}")
     for dep, status in h.get("dependencies", {}).items():
-        marker = "✓" if status == "ok" else "✗"
+        marker = "[OK]" if status == "ok" else "[--]"
         print(f"    {marker} {dep}: {status}")
     pause()
 
@@ -90,7 +91,7 @@ def main():
     print(f"  Running: docker stop {POSTGRES_CONTAINER}")
     result = run(f"docker stop {POSTGRES_CONTAINER}")
     stopped_services.append(POSTGRES_CONTAINER)
-    print(f"  ✓ Container stopped: {result}")
+    print(f"  [OK] Container stopped: {result}")
     time.sleep(2)
     pause()
 
@@ -110,7 +111,7 @@ def main():
 
     print()
     for dep, status in h.get("dependencies", {}).items():
-        marker = "✓" if status == "ok" else "✗ DOWN"
+        marker = "[OK]" if status == "ok" else "[--] DOWN"
         print(f"    {marker} {dep}: {status}")
 
     # DB-dependent endpoint
@@ -119,7 +120,7 @@ def main():
     print(f"    HTTP {code}: {detail}")
 
     print()
-    print("  ✓ API correctly reports 'degraded' — it's still running but can't")
+    print("  [OK] API correctly reports 'degraded' - it's still running but can't")
     print("    reach the database. Requests requiring DB fail gracefully.")
     pause()
 
@@ -129,7 +130,7 @@ def main():
     print(f"  Running: docker start {POSTGRES_CONTAINER}")
     run(f"docker start {POSTGRES_CONTAINER}")
     stopped_services.remove(POSTGRES_CONTAINER)
-    print("  ✓ Container started. Waiting for health check...")
+    print("  [OK] Container started. Waiting for health check...")
     time.sleep(5)
     pause()
 
@@ -148,7 +149,7 @@ def main():
 
     print()
     for dep, status in h.get("dependencies", {}).items():
-        marker = "✓" if status == "ok" else "✗"
+        marker = "[OK]" if status == "ok" else "[--]"
         print(f"    {marker} {dep}: {status}")
 
     # DB-dependent endpoint
@@ -163,7 +164,7 @@ def main():
         print(f"    {line}")
 
     print()
-    print("  ✓ FULL RECOVERY — API reconnected to DB automatically")
+    print("  [OK] FULL RECOVERY - API reconnected to DB automatically")
     print()
     print("  SELF-HEALING MECHANISMS:")
     print("  1. DB monitor: background task pings DB every 30s")

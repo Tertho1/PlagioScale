@@ -629,6 +629,37 @@ async def health_check():
     return {"status": status, "service": "api-service", "dependencies": deps}
 
 
+# ── Request metrics for autoscaler ──────────────────────────────────────────
+import collections
+_request_times = collections.deque(maxlen=500)
+_request_count = 0
+
+@app.get("/metrics")
+async def metrics():
+    """API metrics for the autoscaler: request count, p50, p95, p99 latency."""
+    global _request_count
+    times = sorted(_request_times) if _request_times else [0]
+    n = len(times)
+    return {
+        "request_count": _request_count,
+        "p50_ms": round(times[n // 2] * 1000, 1),
+        "p95_ms": round(times[int(n * 0.95)] * 1000, 1),
+        "p99_ms": round(times[int(n * 0.99)] * 1000, 1),
+        "sample_size": n,
+    }
+
+
+@app.middleware("http")
+async def track_request_metrics(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed = time.monotonic() - start
+    _request_times.append(elapsed)
+    global _request_count
+    _request_count += 1
+    return response
+
+
 @app.post("/submit")
 @limiter.limit("100/minute")
 async def submit_text(request: Request, body: SubmitRequest, current_user: dict = Depends(get_current_user)):

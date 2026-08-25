@@ -31,31 +31,31 @@ def prom_query(path):
 
 def main():
     print("=" * 70)
-    print("  PLAGIOSCALE — MONITORING STACK DEMO")
+    print("  PLAGIOSCALE - MONITORING STACK DEMO")
     print("=" * 70)
 
     # --- Step 1: Prometheus Targets ---
-    print("\n[1/5] PROMETHEUS — SCRAPE TARGETS")
+    print("\n[1/5] PROMETHEUS - SCRAPE TARGETS")
     print("-" * 70)
     data = prom_query("/api/v1/targets")
     if data and data.get("status") == "success":
         targets = data["data"]["activeTargets"]
         print(f"  {'Job':<25} {'Endpoint':<35} {'State':<10}")
-        print(f"  {'─' * 25} {'─' * 35} {'─' * 10}")
+        print(f"  {'-' * 25} {'-' * 35} {'-' * 10}")
         for t in targets:
             job = t.get("labels", {}).get("job", "?")
             ep = t.get("scrapeUrl", "?")
             state = t.get("health", "?")
-            marker = "✓" if state == "up" else "✗"
+            marker = "[OK]" if state == "up" else "[--]"
             print(f"  {job:<25} {ep:<35} {marker} {state}")
         print(f"\n  Total: {len(targets)} targets, "
               f"{sum(1 for t in targets if t.get('health') == 'up')} UP")
     else:
-        print("  ✗ Cannot reach Prometheus")
+        print("  [--] Cannot reach Prometheus")
     pause()
 
     # --- Step 2: Prometheus Alerts ---
-    print("\n[2/5] PROMETHEUS — ALERT RULES")
+    print("\n[2/5] PROMETHEUS - ALERT RULES")
     print("-" * 70)
     data = prom_query("/api/v1/rules")
     if data and data.get("status") == "success":
@@ -75,11 +75,11 @@ def main():
                     print()
         print(f"  Total: {alert_count} alert rules defined")
     else:
-        print("  ✗ Cannot reach Prometheus")
+        print("  [--] Cannot reach Prometheus")
     pause()
 
     # --- Step 3: Monitoring Service ---
-    print("\n[3/5] MONITORING SERVICE — LIVE DASHBOARD")
+    print("\n[3/5] MONITORING SERVICE - LIVE DASHBOARD")
     print("-" * 70)
     try:
         r = requests.get(f"{MONITORING}/api/overview", timeout=5)
@@ -92,9 +92,9 @@ def main():
             print(f"  Jobs processing:  {jobs.get('processing', '?')}")
             print(f"  Jobs failed:      {jobs.get('failed', '?')}")
         else:
-            print(f"  ✗ Status: {r.status_code}")
+            print(f"  [--] Status: {r.status_code}")
     except Exception as e:
-        print(f"  ✗ Cannot reach monitoring service: {e}")
+        print(f"  [--] Cannot reach monitoring service: {e}")
 
     print()
     try:
@@ -106,14 +106,14 @@ def main():
                 name = c.get("name", "?").replace("plagioscale-", "")
                 status = c.get("status", "?")
                 health = c.get("health", "")
-                marker = "✓" if "healthy" in str(status).lower() or "running" in str(status).lower() else "?"
+                marker = "[OK]" if "healthy" in str(status).lower() or "running" in str(status).lower() else "?"
                 print(f"    {marker} {name:<25} {status} {health}")
     except Exception:
         pass
     pause()
 
     # --- Step 4: Grafana Dashboards ---
-    print("\n[4/5] GRAFANA — PRE-PROVISIONED DASHBOARDS")
+    print("\n[4/5] GRAFANA - PRE-PROVISIONED DASHBOARDS")
     print("-" * 70)
     print("  Dashboards available at: http://localhost:3000 (admin/admin)")
     print()
@@ -142,7 +142,7 @@ def main():
     pause()
 
     # --- Step 5: Alertmanager ---
-    print("\n[5/5] ALERTMANAGER — ALERT ROUTING")
+    print("\n[5/5] ALERTMANAGER - ALERT ROUTING")
     print("-" * 70)
     try:
         r = requests.get("http://localhost:9093/api/v2/status", timeout=5)
@@ -151,27 +151,27 @@ def main():
         else:
             print(f"  Status: {r.status_code}")
     except Exception:
-        print("  ✗ Cannot reach Alertmanager")
+        print("  [--] Cannot reach Alertmanager")
 
     print()
     print("  Alert Flow:")
-    print("  Prometheus ──scrape──▶ 4 services (api, worker, autoscaler, monitoring)")
-    print("       │")
-    print("       ▼")
+    print("  Prometheus --scrape--> 4 services (api, worker, autoscaler, monitoring)")
+    print("       |")
+    print("       v")
     print("  5 alert rules (ServiceDown, QueueDepthHigh, JobFailureRate, etc.)")
-    print("       │")
-    print("       ▼")
-    print("  Alertmanager ──webhook──▶ API /api/webhooks/alertmanager")
-    print("       │")
-    print("       ▼")
+    print("       |")
+    print("       v")
+    print("  Alertmanager --webhook--> API /api/webhooks/alertmanager")
+    print("       |")
+    print("       v")
     print("  Auto-remediation (rate-limit counters, audit logging)")
     print()
     print("=" * 70)
     print("  MONITORING STACK SUMMARY:")
-    print("  • Prometheus: scrapes 4 targets, 5s interval, 5 alert rules")
-    print("  • Grafana: 2 dashboards, auto-refresh, Prometheus datasource")
-    print("  • Monitoring: live HTML dashboard, health grid, autoscaler events")
-    print("  • Alertmanager: routes alerts to API webhook for auto-remediation")
+    print("  * Prometheus: scrapes 4 targets, 5s interval, 5 alert rules")
+    print("  * Grafana: 2 dashboards, auto-refresh, Prometheus datasource")
+    print("  * Monitoring: live HTML dashboard, health grid, autoscaler events")
+    print("  * Alertmanager: routes alerts to API webhook for auto-remediation")
     print("=" * 70)
 
 

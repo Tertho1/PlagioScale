@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Demo Script 2: Queue-Based Autoscaling
-Submits jobs rapidly and watches workers scale from 1 → N.
+Submits jobs rapidly and watches workers scale from 1 -> N.
 Run: python scripts/demo_autoscaling.py
 """
 
@@ -15,8 +15,8 @@ import time
 import redis
 import requests
 
-API = "http://localhost:8000"
-REDIS = redis.Redis(host="localhost", port=6379, decode_responses=True)
+API = os.getenv("API_URL", "http://localhost:3050/api")
+REDIS = redis.Redis(host="localhost", port=6379, decode_responses=True, password=os.getenv("REDIS_PASSWORD", "plagio_redis_pass"))
 
 SAMPLE_TEXTS = [
     "Machine learning is a powerful tool for data analysis and prediction in modern computing.",
@@ -70,10 +70,10 @@ def login():
     # Login
     r = s.post(f"{API}/auth/login", json={
         "email": os.getenv("DEMO_EMAIL", "admin@test.com"),
-        "password": os.getenv("DEMO_PASSWORD", "Admin@123"),
+        "password": os.getenv("DEMO_PASSWORD", "admin123"),
     }, headers={"X-CSRF-Token": csrf}, timeout=5)
     if r.status_code != 200:
-        print(f"  ✗ Login failed: {r.status_code} {r.text[:100]}")
+        print(f"  [--] Login failed: {r.status_code} {r.text[:100]}")
         return None, None
     csrf = s.cookies.get("csrf_token", "")
     return s, csrf
@@ -86,7 +86,7 @@ def create_batch(session, csrf, name):
         "expected_count": 20,
     }, headers={"X-CSRF-Token": csrf}, timeout=5)
     if r.status_code != 200:
-        print(f"  ✗ Create batch failed: {r.status_code}")
+        print(f"  [--] Create batch failed: {r.status_code}")
         return None
     return r.json().get("batch_id")
 
@@ -123,7 +123,7 @@ def cleanup_batch(session, csrf, batch_id):
 
 def main():
     print("=" * 70)
-    print("  PLAGIOSCALE — AUTOSCALING DEMO")
+    print("  PLAGIOSCALE - AUTOSCALING DEMO")
     print("=" * 70)
     print()
     print("  This demo shows how the autoscaler reacts to queue depth.")
@@ -136,7 +136,7 @@ def main():
     print("-" * 70)
     workers = get_workers()
     queue = get_queue_depth()
-    print(f"  Workers running: {len(workers)} — {', '.join(workers)}")
+    print(f"  Workers running: {len(workers)} - {', '.join(workers)}")
     print(f"  Queue depth:     {queue} jobs")
     pause()
 
@@ -145,22 +145,22 @@ def main():
     print("-" * 70)
     session, csrf = login()
     if not session:
-        print("  ✗ Cannot continue without login. Set DEMO_EMAIL/DEMO_PASSWORD env vars.")
+        print("  [--] Cannot continue without login. Set DEMO_EMAIL/DEMO_PASSWORD env vars.")
         return
-    print("  ✓ Logged in")
+    print("  [OK] Logged in")
 
     batch_id = create_batch(session, csrf, "Autoscale Demo")
     if not batch_id:
-        print("  ✗ Cannot create batch")
+        print("  [--] Cannot create batch")
         return
-    print(f"  ✓ Created batch: {batch_id[:8]}...")
+    print(f"  [OK] Created batch: {batch_id[:8]}...")
 
     # Submit files
     print("  Submitting 10 files...")
     for i in range(10):
         text = SAMPLE_TEXTS[i % len(SAMPLE_TEXTS)]
         ok = submit_file(session, csrf, batch_id, f"AS{i+1:03d}", text)
-        status = "✓" if ok else "✗"
+        status = "[OK]" if ok else "[--]"
         print(f"    {status} Submission {i+1}/10")
     pause()
 
@@ -174,7 +174,7 @@ def main():
         job = json.dumps({"job_id": job_id, "text": payload})
         REDIS.lpush("job_queue", job)
     queue_after = get_queue_depth()
-    print(f"  ✓ Enqueued 15 jobs → queue depth now: {queue_after}")
+    print(f"  [OK] Enqueued 15 jobs -> queue depth now: {queue_after}")
     pause()
 
     # --- Step 4: Watch Scaling ---
@@ -198,11 +198,11 @@ def main():
             scale_events.append(("UP", elapsed, n_workers, new))
             max_workers = n_workers
 
-        marker = " ← SCALE UP" if n_workers > len(workers) else ""
+        marker = " <- SCALE UP" if n_workers > len(workers) else ""
         print(f"  [{elapsed:>3}s] Workers: {n_workers} | Queue: {queue_depth:>3}{marker}")
 
         if queue_depth == 0 and tick > 3:
-            print("\n  ✓ Queue drained — autoscaler will scale down shortly")
+            print("\n  [OK] Queue drained - autoscaler will scale down shortly")
             break
 
     # Wait for scale-down
@@ -224,12 +224,12 @@ def main():
     print(f"  Time to drain queue:   {int(time.time() - start)}s")
     if scale_events:
         for direction, t, nw, details in scale_events:
-            print(f"    ↑ t={t}s: scaled to {nw} workers")
+            print(f"    ^ t={t}s: scaled to {nw} workers")
     print()
     print("  HOW IT WORKS:")
     print("  1. Autoscaler polls Redis queue depth every 5s")
-    print("  2. Queue > 10 → creates new worker via Docker SDK")
-    print("  3. Queue < 3 → stops extra workers")
+    print("  2. Queue > 10 -> creates new worker via Docker SDK")
+    print("  3. Queue < 3 -> stops extra workers")
     print("  4. Cooldown: 20s between scale events")
     print("  5. Limits: min=1, max=5 workers")
     print("=" * 70)
@@ -237,7 +237,7 @@ def main():
     # Cleanup
     print("\nCleaning up...")
     cleanup_batch(session, csrf, batch_id)
-    print("  ✓ Demo batch deleted")
+    print("  [OK] Demo batch deleted")
 
 
 if __name__ == "__main__":

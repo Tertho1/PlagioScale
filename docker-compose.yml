@@ -46,9 +46,8 @@ services:
       context: .
       dockerfile: api-service/Dockerfile
     user: "65532:65532"
-    ports:
-      - "8000:8000"
-      - "8443:8443"
+    expose:
+      - "8000"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -170,6 +169,12 @@ services:
       - MAX_WORKERS=5
       - COOLDOWN_SECONDS=20
       - POLL_INTERVAL=5
+      # API scaling (latency-based)
+      - API_SCALE_UP_MS=500
+      - API_SCALE_DOWN_MS=200
+      - MIN_API=1
+      - MAX_API=5
+      - API_COOLDOWN_SECONDS=60
       - AUTOSCALER_EVENTS_KEY=autoscaler_events
       - PYTHONUNBUFFERED=1
     volumes:
