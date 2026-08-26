@@ -160,10 +160,9 @@ export default function Dashboard() {
   const assignments = useAssignments();
   const {
     token, loading, error, setError,
-    ownedAssignments, sharedAssignments,
+    ownedAssignments,
     selectedId, setSelectedId, setSelected,
     creating, assignmentName, setAssignmentName,
-    expectedCount, setExpectedCount,
     renaming, setRenaming,
     saving, renameValue, setRenameValue,
     confirmDelete, setConfirmDelete,
@@ -239,10 +238,6 @@ export default function Dashboard() {
   const filteredOwned = useMemo(
     () => filterBySearch(ownedAssignments),
     [filterBySearch, ownedAssignments]
-  );
-  const filteredShared = useMemo(
-    () => filterBySearch(sharedAssignments),
-    [filterBySearch, sharedAssignments]
   );
 
   if (!token) return null;

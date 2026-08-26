@@ -14,8 +14,7 @@ import sys
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (API, FRONTEND, MONITORING, PROJECT, pause, run,
-                    service_containers, short)
+from common import API, FRONTEND, MONITORING, PROJECT, pause, run, service_containers, short
 
 
 def get_inspect(name):

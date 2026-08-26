@@ -22,8 +22,7 @@ import time
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (API, NON_INTERACTIVE, PlagioClient, pause, run,
-                    service_containers, short)
+from common import API, PlagioClient, pause, run, service_containers
 
 POSTGRES_CONTAINER = os.getenv("POSTGRES_CONTAINER", f"{os.getenv('COMPOSE_PROJECT_NAME', 'plagioscale')}-postgres")
 
@@ -152,7 +151,7 @@ def main():
     pause()
 
     # ── Step 4: Restart PostgreSQL ────────────────────────────────────────
-    print(f"\n[4/5] RESTARTING POSTGRESQL")
+    print("\n[4/5] RESTARTING POSTGRESQL")
     print("-" * 70)
     run(["docker", "start", POSTGRES_CONTAINER])
     stopped.remove(POSTGRES_CONTAINER)

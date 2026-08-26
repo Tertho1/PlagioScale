@@ -14,10 +14,8 @@ import subprocess
 import sys
 import time
 
-import requests
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import API, PROJECT, pause, run, service_containers, short
+from common import PROJECT, pause, run, service_containers, short
 
 
 def get_inspect(name):
@@ -54,7 +52,7 @@ def oom_demo():
                  "--format", "{{.Config.Image}}"])
     name = f"{PROJECT}-oom-demo-{int(time.time())}"
     print(f"  Launching throwaway container from {image}")
-    print(f"  Limit: 64MB RAM | Demand: allocate 512MB bytearray")
+    print("  Limit: 64MB RAM | Demand: allocate 512MB bytearray")
     cmd = ["docker", "run", "--rm", "--name", name, "-m", "64m",
            image, "python", "-c",
            "print('allocating...'); x = bytearray(512*1024*1024); print('allocated')"]

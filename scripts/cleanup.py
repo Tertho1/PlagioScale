@@ -20,9 +20,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import redis_client
-
 import psycopg
+from common import redis_client
 
 DB = dict(host=os.getenv("DB_HOST", "localhost"), port=os.getenv("DB_PORT", "5432"),
           dbname=os.getenv("DB_NAME", "plagioscale"),

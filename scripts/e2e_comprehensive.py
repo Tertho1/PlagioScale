@@ -17,7 +17,7 @@ import time
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import API, FRONTEND, MONITORING, AUTOSCALER_METRICS, PlagioClient
+from common import API, AUTOSCALER_METRICS, FRONTEND, MONITORING, PlagioClient
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"

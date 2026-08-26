@@ -186,9 +186,9 @@ def main():
     # --- Step 3: Enqueue Jobs ---
     print("\n[3/5] ENQUEUING JOBS")
     print("-" * 70)
-    JOBS = int(os.getenv("DEMO_JOBS", "100"))
+    jobs = int(os.getenv("DEMO_JOBS", "100"))
     # Enqueue BATCH_COMPUTE jobs directly to Redis (full Job.to_json shape)
-    for i in range(JOBS):
+    for i in range(jobs):
         job_id = f"demo-{batch_id[:8]}-{i:03d}"
         payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
         job = json.dumps({
@@ -202,7 +202,7 @@ def main():
         })
         REDIS.lpush("job_queue", job)
     queue_after = get_queue_depth()
-    print(f"  ✓ Enqueued {JOBS} jobs → queue depth now: {queue_after}")
+    print(f"  ✓ Enqueued {jobs} jobs → queue depth now: {queue_after}")
     pause()
 
     # --- Step 4: Watch Scaling ---

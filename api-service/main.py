@@ -1,6 +1,7 @@
 """PlagioScale API service."""
 
 import asyncio
+import collections
 import csv
 import hashlib
 import hmac as _hmac
@@ -75,7 +76,7 @@ from shared.database import (
     update_job_status,
     update_user_role,
 )
-from shared.email_notifier import notify_completion, send_email
+from shared.email_notifier import notify_completion
 from shared.external_lookup import search_external_sources
 from shared.models import Job, JobStatus
 from shared.pdf_report import generate_similarity_report_pdf
@@ -633,7 +634,7 @@ async def health_check():
 
 
 # ── Request metrics for autoscaler ──────────────────────────────────────────
-import collections
+
 _request_times = collections.deque(maxlen=500)
 _request_count = 0
 _active_requests = 0
@@ -653,7 +654,7 @@ async def track_request_metrics(request: Request, call_next):
     global _request_count, _active_requests
     _active_requests += 1
     _request_count += 1
-    start = time.monotonic()
+    time.monotonic()
     try:
         response = await call_next(request)
         return response

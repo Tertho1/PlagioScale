@@ -22,8 +22,7 @@ import time
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (API, PlagioClient, autoscaler_events, container_http_json,
-                    pause, service_containers, short)
+from common import API, PlagioClient, autoscaler_events, container_http_json, pause, service_containers, short
 
 SCALE_UP_THRESHOLD = int(os.getenv("API_SCALE_UP_THRESHOLD", "20"))   # matches compose
 SCALE_DOWN_THRESHOLD = int(os.getenv("API_SCALE_DOWN_THRESHOLD", "5"))
@@ -135,7 +134,7 @@ def main():
         fleet = fleet_metrics()
         n = len(fleet)
         active = sum(f["active"] for f in fleet)
-        served = sum(f["total"] or 0 for f in fleet)
+        sum(f["total"] or 0 for f in fleet)
         peak_active = max(peak_active, active)
         max_repl = max(max_repl, n)
 
