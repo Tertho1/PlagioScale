@@ -26,6 +26,8 @@ def test_detect_empty_text():
 def test_detect_unavailable():
     d = AIContentDetector()
     d._roberta_pipeline = None
+    d._gpt2_model = None
+    d._ensure_loaded = lambda: None  # prevent auto-reload
     assert d.detect("some text") == -1.0
 
 
