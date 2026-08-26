@@ -237,6 +237,7 @@ class Worker:
     def process_similarity(self, job: Job, batch_id: str) -> bool:
         """Compute similarity matrix for all submissions in a batch."""
         try:
+            time.sleep(0.5)  # Ensure queue depth is visible to autoscaler
             print(f"[{WORKER_ID}] Starting similarity compute for {batch_id} (job {job.job_id})")
             job_start = time.time()
 

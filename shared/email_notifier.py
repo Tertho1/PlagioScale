@@ -95,6 +95,27 @@ def send_email(
         return _send_via(server, cfg, to, msg)
 
 
+def send_bulk_emails_detailed(messages: list[tuple]) -> list[bool]:
+    """Send multiple emails over ONE SMTP connection.
+
+    Args:
+        messages: list of (to, subject, body_text[, body_html]) tuples.
+
+    Returns a list of success flags aligned with the input.
+    """
+    results: list[bool] = []
+    with smtp_connection() as server:
+        if server is None:
+            return [False] * len(messages)
+        cfg = _get_smtp_config()
+        for item in messages:
+            to, subject, body_text = item[0], item[1], item[2]
+            body_html = item[3] if len(item) > 3 else None
+            msg = _build_message(cfg, to, subject, body_text, body_html)
+            results.append(_send_via(server, cfg, to, msg))
+    return results
+
+
 def send_bulk_emails(messages: list[tuple]) -> int:
     """Send multiple emails over one SMTP connection.
 
@@ -103,18 +124,7 @@ def send_bulk_emails(messages: list[tuple]) -> int:
 
     Returns number of successfully sent emails.
     """
-    sent = 0
-    with smtp_connection() as server:
-        if server is None:
-            return 0
-        cfg = _get_smtp_config()
-        for item in messages:
-            to, subject, body_text = item[0], item[1], item[2]
-            body_html = item[3] if len(item) > 3 else None
-            msg = _build_message(cfg, to, subject, body_text, body_html)
-            if _send_via(server, cfg, to, msg):
-                sent += 1
-    return sent
+    return sum(send_bulk_emails_detailed(messages))
 
 
 def notify_completion(to: str, name: str, batch_name: str, score: Optional[float] = None):

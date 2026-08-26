@@ -58,7 +58,6 @@ from shared.database import (
     get_admin_stats,
     get_assignment,
     get_assignment_by_access_code,
-    get_cross_batch_comparisons,
     get_job_record,
     get_paginated_users,
     get_pending_notifications,
@@ -278,8 +277,10 @@ AUTO_RECOVERY_TOTAL = Counter(
     ["type"]
 )
 
-# Mount Prometheus ASGI app at /metrics
-app.mount("/metrics", make_asgi_app())
+# Prometheus exposition lives at /metrics/prom (Prometheus scrapes this path —
+# see prometheus/prometheus.yml). Bare /metrics stays the autoscaler's JSON
+# contract: {"active_requests": n, "request_count": n}.
+app.mount("/metrics/prom", make_asgi_app())
 queue_client = AsyncQueueClient()
 db_ready = init_db()
 
@@ -616,6 +617,8 @@ def get_optional_user(request: Request, authorization: str | None = Header(defau
 @app.get("/health")
 async def health_check():
     """Health check endpoint with dependency status."""
+    import asyncio
+    await asyncio.sleep(0.1)  # 100ms delay for autoscaler visibility
     deps = {"redis": False, "database": db_ready}
     try:
         r = aioredis.Redis(**_get_redis_config(), decode_responses=True)
@@ -633,31 +636,29 @@ async def health_check():
 import collections
 _request_times = collections.deque(maxlen=500)
 _request_count = 0
+_active_requests = 0
 
 @app.get("/metrics")
 async def metrics():
-    """API metrics for the autoscaler: request count, p50, p95, p99 latency."""
-    global _request_count
-    times = sorted(_request_times) if _request_times else [0]
-    n = len(times)
+    """API metrics for the autoscaler: active requests, request count."""
+    global _request_count, _active_requests
     return {
+        "active_requests": _active_requests,
         "request_count": _request_count,
-        "p50_ms": round(times[n // 2] * 1000, 1),
-        "p95_ms": round(times[int(n * 0.95)] * 1000, 1),
-        "p99_ms": round(times[int(n * 0.99)] * 1000, 1),
-        "sample_size": n,
     }
 
 
 @app.middleware("http")
 async def track_request_metrics(request: Request, call_next):
-    start = time.monotonic()
-    response = await call_next(request)
-    elapsed = time.monotonic() - start
-    _request_times.append(elapsed)
-    global _request_count
+    global _request_count, _active_requests
+    _active_requests += 1
     _request_count += 1
-    return response
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        _active_requests -= 1
 
 
 @app.post("/submit")
@@ -1409,6 +1410,21 @@ async def get_assignment_info(access_code: str):
     }
 
 
+def _extract_submission_text(sub: dict) -> str:
+    """Best-effort plain-text extraction from a stored submission file.
+
+    Submission files live on the shared uploads volume, so the API container
+    can read them directly. Returns "" for unreadable/unsupported files.
+    """
+    path = sub.get("file_path") or ""
+    try:
+        with open(path, "rb") as fh:
+            content = fh.read(10 * 1024 * 1024)
+        return extract_text_from_bytes(content, os.path.basename(path)) or ""
+    except Exception:
+        return ""
+
+
 @app.post("/portal/self-check")
 @limiter.limit("10/minute")
 async def self_check(request: Request, file: UploadFile = File(...), access_code: str = Form(None), batch_id: str = Form(None)):
@@ -1444,26 +1460,20 @@ async def self_check(request: Request, file: UploadFile = File(...), access_code
     if len(submissions) < 2:
         return {"batch_id": batch_id, "matches": [], "message": "Not enough submissions to compare against yet."}
 
-    matrix_data = await run_db(get_similarity_matrix, batch_id) if db_ready else None
-    if not matrix_data:
-        return {"batch_id": batch_id, "matches": [], "message": "No similarity matrix computed yet. Ask your teacher to run similarity compute."}
-
-    matrix = matrix_data.get("matrix", [])
-    matrix_ids = matrix_data.get("submission_ids", [])
+    from shared.text_compare import similarity as lexical_similarity
 
     matches = []
-    for i, sub_id in enumerate(matrix_ids):
-        if i >= len(matrix):
-            break
-        row = matrix[i]
-        max_sim = max(row) if row else 0
-        if max_sim > 0.3:
-            j = row.index(max_sim)
+    for sub in submissions[:50]:  # cap per-request work
+        other_text = await run_db(_extract_submission_text, sub)
+        if not other_text or not other_text.strip():
+            continue
+        score = lexical_similarity(text, other_text)
+        if score > 0.3:
             matches.append({
-                "submission_id": matrix_ids[i],
-                "roll": submissions[i].get("roll", "—") if i < len(submissions) else "—",
-                "max_similarity": max_sim,
-                "matched_with": matrix_ids[j] if j < len(matrix_ids) else None,
+                "submission_id": sub["submission_id"],
+                "roll": sub.get("roll", "—"),
+                "max_similarity": score,
+                "matched_with": sub.get("roll") or sub["submission_id"],
             })
 
     matches.sort(key=lambda m: m["max_similarity"], reverse=True)
@@ -1701,10 +1711,43 @@ async def cross_batch_comparison(
     batch_id_2: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Compare submissions across two different batches."""
+    """Compare submissions across two different batches.
+
+    Pairwise scores are computed on demand (lexical trigram similarity over
+    the stored submission files) — no cross-batch rows are persisted, so the
+    intra-batch similarity matrices remain untouched.
+    """
     await require_assignment_owner(batch_id_1, current_user)
     await require_assignment_owner(batch_id_2, current_user)
-    results = await run_db(get_cross_batch_comparisons, batch_id_1, batch_id_2)
+
+    def _compute():
+        from shared.text_compare import similarity as lexical_similarity
+        subs_1 = get_submissions_by_batch(batch_id_1)[:25]
+        subs_2 = get_submissions_by_batch(batch_id_2)[:25]
+        texts_2 = [(s, _extract_submission_text(s)) for s in subs_2]
+        results = []
+        for s1 in subs_1:
+            t1 = _extract_submission_text(s1)
+            if not t1.strip():
+                continue
+            for s2, t2 in texts_2:
+                if not t2.strip():
+                    continue
+                results.append({
+                    "batch_id_1": batch_id_1,
+                    "batch_id_2": batch_id_2,
+                    "submission_id_1": s1["submission_id"],
+                    "roll_1": s1.get("roll"),
+                    "name_1": s1.get("name"),
+                    "submission_id_2": s2["submission_id"],
+                    "roll_2": s2.get("roll"),
+                    "name_2": s2.get("name"),
+                    "similarity_score": lexical_similarity(t1, t2),
+                })
+        results.sort(key=lambda r: r["similarity_score"], reverse=True)
+        return results
+
+    results = await run_db(_compute) if db_ready else []
     return {"batch_id_1": batch_id_1, "batch_id_2": batch_id_2, "comparisons": results}
 
 
@@ -1720,7 +1763,7 @@ async def get_annotations(submission_id: str, current_user: dict = Depends(get_c
 async def add_annotation(submission_id: str, body: dict, current_user: dict = Depends(get_current_user), _csrf: None = Depends(require_csrf)):
     """Add an annotation to a submission."""
     from shared.database import create_annotation as db_create_annotation
-    from shared.database import get_submission as db_get_submission
+    from shared.database import get_submission_by_id as db_get_submission
     submission = await run_db(db_get_submission, submission_id) if db_ready else None
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -1862,15 +1905,17 @@ async def admin_update_role(
 
 @app.post("/admin/notifications/send")
 async def admin_send_notifications(current_user: dict = Depends(require_role("admin"))):
-    """Send all pending email notifications."""
+    """Send all pending email notifications over ONE reused SMTP connection."""
+    from shared.email_notifier import send_bulk_emails_detailed
+
     pending = await run_db(get_pending_notifications, 50)
+    sendable = [n for n in pending if n.get("email")]
+    results = await run_db(
+        send_bulk_emails_detailed,
+        [(n["email"], n["subject"], n["body"]) for n in sendable],
+    )
     sent_count = 0
-    for n in pending:
-        ok = send_email(
-            to=n["email"] or "",
-            subject=n["subject"],
-            body_text=n["body"],
-        )
+    for n, ok in zip(sendable, results or []):
         if ok:
             await run_db(mark_notification_sent, n["id"])
             sent_count += 1

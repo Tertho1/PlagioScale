@@ -1,215 +1,188 @@
+#!/usr/bin/env python3
 """
-Stress testing script - simulates multiple plagiarism detection requests.
-Includes autoscaling verification phase.
+Stress test — floods the real detection pipeline and verifies autoscaling.
+
+Submits many files to a throwaway batch through /portal/submit, which enqueues
+actual AI_DETECTION + SIMILARITY_COMPUTE jobs. (The old approach of POSTing
+single texts to /submit no longer exercises anything: those jobs are
+deprecated and skipped by the worker.) While the queue drains we watch the
+monitoring dashboard's view of queue depth and worker count, then compare
+autoscaler events to prove the system reacted to load.
+
+Usage:
+    python scripts/stress_test.py                # 12 files, 4 threads
+    python scripts/stress_test.py 30 8           # 30 files, 8 threads
+    python scripts/stress_test.py --keep         # keep the batch afterwards
 """
 
+import argparse
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-API_URL = "http://localhost:8000"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import API, MONITORING, PlagioClient, autoscaler_events, print_events
 
-# Sample texts to test with
+PARAGRAPH = (
+    "Plagiarism detection compares student submissions against each other and "
+    "against reference corpora. Modern systems blend lexical matching with "
+    "semantic embeddings so paraphrased copying is still caught. "
+)
+
 SAMPLE_TEXTS = [
-    "Machine learning is a powerful tool for data analysis and prediction.",
-    "Cloud computing revolutionizes how we deploy applications.",
-    "Artificial intelligence is transforming industries globally.",
-    "Distributed systems enable scalable applications.",
-    "Containerization with Docker simplifies deployment.",
-    "The rapid advancement in technology continues to reshape society.",
-    "Data science combines statistics and programming for insights.",
-    "Microservices architecture allows independent service scaling.",
+    f"Essay variant {i}: " + PARAGRAPH * 3 for i in range(1, 9)
 ]
 
 
-def submit_job(text: str) -> dict:
-    """Submit a single plagiarism detection job."""
+def overview():
     try:
-        response = requests.post(
-            f"{API_URL}/submit",
-            json={"text": text},
-            timeout=5
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"\u2717 Submit failed: {e}")
-        return None
-
-
-def check_result(job_id: str) -> dict:
-    """Check result of a job."""
-    try:
-        response = requests.get(
-            f"{API_URL}/result/{job_id}",
-            timeout=5
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"\u2717 Get result failed: {e}")
-        return None
-
-
-def check_autoscaler_state():
-    """Query the monitoring service for current cluster state."""
-    results = {}
-    try:
-        resp = requests.get("http://localhost:8090/api/overview", timeout=5)
-        if resp.ok:
-            data = resp.json()
-            results["monitor"] = {
-                "workers": data.get("workers", 0),
-                "queue_length": data.get("queue_length", 0),
-                "jobs": data.get("jobs", {}),
-            }
-            print(f"  \u2139 Monitor: {resp.status_code} OK ({data.get('workers', '?')} workers, {data.get('queue_length', '?')} queued)")
-        else:
-            print(f"  \u26a0 Monitor: {resp.status_code}")
-    except Exception as e:
-        print(f"  \u2014 Monitor: not reachable ({e})")
-    return results
-
-
-def stress_test(num_jobs: int = 20, num_workers: int = 5):
-    """
-    Submit multiple jobs and monitor their progress.
-
-    Args:
-        num_jobs: Number of jobs to submit
-        num_workers: Number of concurrent submission threads
-    """
-    print(f"Starting stress test: {num_jobs} jobs with {num_workers} threads")
-    print(f"API: {API_URL}\n")
-
-    job_ids = []
-
-    # Phase 1: Pre-test autoscaler state
-    print("[Phase 0] Checking autoscaler state before test...")
-    pre_scale = check_autoscaler_state()
-    print()
-
-    # Phase 2: Submit all jobs
-    print(f"[Phase 1] Submitting {num_jobs} jobs...")
-    start_time = time.time()
-
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = []
-        for i in range(num_jobs):
-            text = SAMPLE_TEXTS[i % len(SAMPLE_TEXTS)]
-            future = executor.submit(submit_job, text)
-            futures.append(future)
-
-        for i, future in enumerate(as_completed(futures)):
-            result = future.result()
-            if result:
-                job_ids.append(result['job_id'])
-                print(f"  \u2713 Job {i+1}/{num_jobs} submitted: {result['job_id'][:8]}...")
-
-    submit_time = time.time() - start_time
-    print(f"\u2713 All jobs submitted in {submit_time:.2f}s\n")
-
-    # Phase 3: Check queue stats
-    try:
-        response = requests.get(f"{API_URL}/queue/stats")
-        stats = response.json()
-        print(f"Queue Stats: {stats['message']}\n")
+        r = requests.get(f"{MONITORING}/api/overview", timeout=5)
+        return r.json() if r.ok else {}
     except Exception:
-        pass
+        return {}
 
-    # Phase 4: Monitor job completion
-    print(f"[Phase 2] Monitoring {len(job_ids)} jobs for completion...")
-    completed = 0
-    failed = 0
-    max_wait = 120  # 2 minutes max
-    check_interval = 2  # Check every 2 seconds
-    elapsed = 0
 
-    while completed + failed < len(job_ids) and elapsed < max_wait:
-        time.sleep(check_interval)
-        elapsed += check_interval
+def main():
+    parser = argparse.ArgumentParser(description="PlagioScale pipeline stress test")
+    parser.add_argument("num_files", nargs="?", type=int, default=12,
+                        help="Files to submit (default: 12)")
+    parser.add_argument("threads", nargs="?", type=int, default=4,
+                        help="Concurrent submission threads (default: 4)")
+    parser.add_argument("--keep", action="store_true",
+                        help="Keep the stress batch instead of deleting it")
+    args = parser.parse_args()
 
-        for job_id in job_ids:
-            if job_id is None:
-                continue
+    print("=" * 62)
+    print("PlagioScale - Pipeline Stress Test")
+    print("=" * 62)
 
-            result = check_result(job_id)
-            if result:
-                status = result.get('status', 'UNKNOWN')
+    client = PlagioClient()
+    if not client.login_or_signup():
+        sys.exit(1)
+    print(f"Authenticated as {client.user.get('email')}")
 
-                if status == 'COMPLETED':
-                    score = result.get('result', {}).get('max_plagiarism_score', 'N/A')
-                    print(f"  \u2713 {job_id[:8]}... COMPLETED (score: {score})")
-                    completed += 1
-                    job_ids[job_ids.index(job_id)] = None  # Mark as processed
-                elif status == 'FAILED':
-                    print(f"  \u2717 {job_id[:8]}... FAILED")
-                    failed += 1
-                    job_ids[job_ids.index(job_id)] = None
+    r = client.post(f"{API}/portal/assignments",
+                    json={"name": f"Stress Test {int(time.time())}"}, timeout=10)
+    assert r.status_code == 200, r.text
+    batch = r.json()
+    batch_id, access_code = batch["batch_id"], batch["access_code"]
+    print(f"Batch: {batch_id[:8]}…  (access code {access_code})")
 
-    # Phase 5: Autoscaling verification
-    print("\n[Phase 3] Verifying autoscaler response...")
-    time.sleep(2)
-    post_scale = check_autoscaler_state()
-    _report_scale_change(pre_scale, post_scale)
+    # ── Phase 1: flood submissions ────────────────────────────────────────
+    print(f"\n[1/3] Submitting {args.num_files} files ({args.threads} threads)...")
+    latencies, errors = [], []
 
-    # Phase 6: Results summary
-    total_time = time.time() - start_time
-    pending = len(job_ids) - completed - failed
+    def submit(i):
+        roll = f"T{i:03d}"
+        text = SAMPLE_TEXTS[i % len(SAMPLE_TEXTS)] + f" Unique tail {i}."
+        start = time.time()
+        try:
+            resp = client.post(
+                f"{API}/portal/submit",
+                files={"file": (f"{roll}.txt", text.encode(), "text/plain")},
+                data={"batch_id": batch_id, "roll": roll, "name": f"{roll} Student"},
+                timeout=20,
+            )
+            latencies.append(time.time() - start)
+            if resp.status_code == 429:
+                time.sleep(5)          # rate limited: retry once after backoff
+                resp = client.post(
+                    f"{API}/portal/submit",
+                    files={"file": (f"{roll}.txt", text.encode(), "text/plain")},
+                    data={"batch_id": batch_id, "roll": roll, "name": f"{roll} Student"},
+                    timeout=20,
+                )
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            errors.append(str(e))
+            return False
 
-    print("\nResults Summary:")
-    print(f"  Total time: {total_time:.2f}s")
-    print(f"  Completed: {completed}/{len(job_ids)}")
-    print(f"  Failed: {failed}/{len(job_ids)}")
-    print(f"  Pending: {pending}/{len(job_ids)}")
-    print(f"  Avg time per job: {total_time/len(job_ids):.2f}s")
-    print(f"  Throughput: {len(job_ids)/total_time:.2f} jobs/sec")
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=args.threads) as pool:
+        futures = [pool.submit(submit, i) for i in range(args.num_files)]
+        ok = sum(1 for f in as_completed(futures) if f.result())
+    submit_secs = time.time() - t0
+    print(f"  Submitted {ok}/{args.num_files} in {submit_secs:.1f}s "
+          f"(avg {sum(latencies)/max(len(latencies),1)*1000:.0f}ms, errors {len(errors)})")
 
-    if completed >= num_jobs * 0.8:
-        print("\n  STRESS TEST PASSED (>=80% jobs completed)")
+    if errors:
+        for e in errors[:3]:
+            print(f"    ! {e[:100]}")
+
+    # Force one full recompute: the auto-enqueued jobs fire as soon as the 2nd
+    # file lands, so during a fast burst they only cover the earliest
+    # submissions. An explicit compute guarantees every file is scored.
+    r = client.post(f"{API}/portal/compute-similarity/{batch_id}", timeout=10)
+    print(f"  Full recompute queued: {'OK' if r.status_code == 200 else r.text[:80]}")
+
+    # ── Phase 2: watch queue drain + workers ──────────────────────────────
+    print("\n[2/3] Monitoring queue drain & autoscaler...")
+    print(f"  {'Time':>5}  {'Queue':>6}  {'Workers':>7}  {'Scored':>7}")
+    deadline = time.time() + 420
+    scored = -1
+    peak_queue, peak_workers = 0, 0
+    last_print = 0
+    while time.time() < deadline:
+        ov = overview()
+        q = ov.get("queue_length", 0)
+        w = ov.get("workers", 0)
+        peak_queue, peak_workers = max(peak_queue, q), max(peak_workers, w)
+        r = client.get(f"{API}/portal/submissions/{batch_id}", timeout=10)
+        subs = r.json().get("submissions", []) if r.status_code == 200 else []
+        new_scored = sum(1 for s in subs
+                         if s.get("ai_score") is not None and s.get("plagiarism_score") is not None)
+        now = time.time()
+        if new_scored != scored or now - last_print >= 10:
+            print(f"  {int(now-t0):>4}s  {q:>6}  {w:>7}  {new_scored:>6}/{len(subs)}")
+            scored, last_print = new_scored, now
+        if subs and len(subs) >= ok and new_scored == len(subs):
+            break
+        time.sleep(2)
+
+    drain_secs = time.time() - t0 - submit_secs
+
+    # ── Phase 3: results ──────────────────────────────────────────────────
+    r = client.get(f"{API}/portal/submissions/{batch_id}", timeout=10)
+    subs = r.json().get("submissions", [])
+    ai_scores = [s["ai_score"] for s in subs if s.get("ai_score") is not None]
+    plag = [s["plagiarism_score"] for s in subs if s.get("plagiarism_score") is not None]
+
+    print("\n[3/3] Results")
+    print("-" * 62)
+    print(f"  Submissions OK:      {ok}/{args.num_files}")
+    print(f"  Submit throughput:   {ok/submit_secs:.2f} files/s")
+    print(f"  Queue drain time:    {drain_secs:.1f}s")
+    print(f"  Peak queue depth:    {peak_queue}")
+    print(f"  Peak worker count:   {peak_workers}")
+    if ai_scores:
+        print(f"  AI scores:           n={len(ai_scores)} avg={sum(ai_scores)/len(ai_scores):.3f}")
+    if plag:
+        print(f"  Plagiarism scores:   n={len(plag)} max={max(plag):.3f}")
+
+    events = autoscaler_events(limit=8, message_prefixes=("scaled",))
+    if events:
+        print("\n  Autoscaler actions during test:")
+        print_events(list(reversed(events)))
+
+    verdict = ok >= args.num_files * 0.8 and len(ai_scores) >= int(ok * 0.8)
+    print(f"\n  STRESS TEST {'PASSED' if verdict else 'FAILED'} "
+          f"(>=80% submitted and scored required)")
+
+    if not args.keep:
+        client.delete(f"{API}/portal/assignments/{batch_id}", timeout=15)
+        print("  Stress batch deleted.")
     else:
-        print("\n  STRESS TEST FAILED (<80% jobs completed)")
+        print(f"  Batch kept: {batch_id}")
 
-
-def _report_scale_change(pre, post):
-    """Compare pre/post autoscaler snapshots."""
-    print("\n  Autoscaler comparison:")
-    for key in pre:
-        before = pre.get(key, {})
-        after = post.get(key, {})
-        workers_before = before.get("workers", "?")
-        workers_after = after.get("workers", "?")
-        if workers_before != workers_after:
-            print(f"    \u2191 {key}: {workers_before} \u2192 {workers_after} workers")
-        else:
-            print(f"    \u2014 {key}: {workers_before} workers (unchanged)")
+    sys.exit(0 if verdict else 1)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="PlagioScale stress test with autoscaling verification")
-    parser.add_argument("num_jobs", nargs="?", type=int, default=20, help="Number of jobs to submit (default: 20)")
-    parser.add_argument("num_workers", nargs="?", type=int, default=5, help="Concurrent submission threads (default: 5)")
-    parser.add_argument("--scale", type=int, metavar="N", help="Pre-scale workers to N before test")
-    args = parser.parse_args()
-
-    if args.scale:
-        print(f"[Setup] Requesting pre-scale to {args.scale} workers...")
-        try:
-            resp = requests.post(f"{API_URL}/portal/admin/scale/{args.scale}", timeout=5)
-            if resp.ok:
-                print(f"  ✓ Pre-scaled to {args.scale} workers")
-            else:
-                print(f"  ⚠ Pre-scale request returned {resp.status_code}")
-        except requests.ConnectionError:
-            print("  — Autoscaler endpoint not reachable, proceeding without pre-scale")
-        time.sleep(2)
-
     try:
-        stress_test(args.num_jobs, args.num_workers)
+        main()
     except KeyboardInterrupt:
-        print("\nStress test interrupted")
-    except Exception as e:
-        print(f"\nError: {e}")
+        print("\nInterrupted.")

@@ -1,259 +1,222 @@
 #!/usr/bin/env python3
 """
-Test Script 3: API Auto-Scaling
-Sends concurrent requests to stress the API and watches replicas scale 1->N.
-Monitors p95 latency and verifies Nginx distributes traffic across replicas.
+API Auto-Scaling Demo
+Generates sustained HTTP load through the frontend proxy and shows — live —
+how the autoscaler watches ACTIVE REQUESTS per replica and clones api-service
+containers when the count exceeds its threshold (1 -> N), then removes them
+again once load drops (N -> 1).
+
+You will see a continuous table where every row is one observation:
+  Time | Fleet active requests (marked !UP / !DOWN vs thresholds) | Replicas
+plus a per-replica breakdown (active/served) and the autoscaler's own decision
+lines printed inline, e.g.  >>> autoscaler: Scaled API to 2 replicas
+
 Run: python scripts/test_api_scaling.py
 """
 
 import os
-import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-API = "http://localhost:3050/api"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import (API, PlagioClient, autoscaler_events, container_http_json,
+                    pause, service_containers, short)
 
+SCALE_UP_THRESHOLD = int(os.getenv("API_SCALE_UP_THRESHOLD", "20"))   # matches compose
+SCALE_DOWN_THRESHOLD = int(os.getenv("API_SCALE_DOWN_THRESHOLD", "5"))
+MAX_API = int(os.getenv("MAX_API", "5"))                              # compose cap
+TARGET_REPLICAS = min(int(os.getenv("DEMO_TARGET_REPLICAS", "3")), MAX_API)
+NUM_THREADS = int(os.getenv("DEMO_THREADS", "80"))
 
-def pause(msg="\nPress Enter to continue..."):
-    input(msg)
-
-
-def run(cmd):
-    """Run command and return stdout."""
-    with os.popen(cmd) as f:
-        return f.read().strip()
-
-
-def get_api_containers():
-    raw = run('docker ps --format "{{.Names}}~{{.Status}}"')
-    containers = []
-    for line in raw.splitlines():
-        if "api" in line.lower() and "autoscaler" not in line.lower():
-            parts = line.split("~", 1)
-            if len(parts) >= 2:
-                containers.append({"name": parts[0], "status": parts[1]})
-    return containers
-
-
-def get_api_metrics():
-    try:
-        r = requests.get(f"{API}/metrics", timeout=3)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
+# Any running container on the compose network can reach the API replicas;
+# use the first one we can exec into as a relay host (container IPs are not
+# routable from the Windows host).
+def _relay_container():
+    for svc in ("autoscaler", "monitoring-service"):
+        cs = service_containers(svc)
+        if cs:
+            return cs[0]["name"]
     return None
 
 
-def get_autoscaler_metrics():
-    try:
-        import urllib.request
-        r = urllib.request.urlopen("http://localhost:8002/metrics", timeout=3)
-        text = r.read().decode()
-        result = {}
-        for line in text.splitlines():
-            if line.startswith("plagioscale_api_replicas"):
-                result["api_replicas"] = float(line.split()[-1])
-            elif line.startswith("plagioscale_api_p95_ms"):
-                result["api_p95_ms"] = float(line.split()[-1])
-            elif line.startswith("plagioscale_scale_events_total"):
-                if not line.startswith("#"):
-                    result["scale_events"] = float(line.split()[-1])
-        return result
-    except Exception:
-        return {}
+RELAY = _relay_container()
 
 
-def get_worker_count():
-    raw = run('docker ps --format {{.Names}}')
-    return len([n for n in raw.splitlines() if "worker" in n.lower() and "autoscaler" not in n.lower()])
+def fleet_metrics():
+    """[{name, active, total, ok}] for every running API replica."""
+    out = []
+    for c in service_containers("api-service"):
+        data = None
+        if RELAY and c["ip"]:
+            data = container_http_json(RELAY, f"http://{c['ip']}:8000/metrics")
+        if isinstance(data, dict):
+            out.append({"name": c["name"], "active": data.get("active_requests", 0),
+                        "total": data.get("request_count"), "ok": True})
+        else:
+            out.append({"name": c["name"], "active": 0, "total": None, "ok": False})
+    return out
 
 
-def login():
-    s = requests.Session()
-    r = s.post(f"{API}/auth/login", json={
-        "email": os.getenv("DEMO_EMAIL", "admin@test.com"),
-        "password": os.getenv("DEMO_PASSWORD", "admin123"),
-    }, timeout=5)
-    if r.status_code != 200:
-        print(f"  Login failed: {r.status_code} {r.text[:100]}")
-        return None, None
-    csrf = s.cookies.get("csrf_token", "")
-    token = s.cookies.get("access_token", "")
-    return s, csrf
-
-
-def single_request(session, endpoint):
-    """Make a single API request and return elapsed time."""
-    start = time.monotonic()
-    try:
-        r = session.get(f"{API}{endpoint}", timeout=10)
-        elapsed = time.monotonic() - start
-        return elapsed, r.status_code
-    except Exception as e:
-        elapsed = time.monotonic() - start
-        return elapsed, str(e)
+def fmt_extra(e):
+    extra = {k: v for k, v in e.items() if k not in ("timestamp", "level", "message")}
+    return f" {{{', '.join(f'{k}={v}' for k, v in extra.items())}}}" if extra else ""
 
 
 def main():
-    print("=" * 70)
-    print("  PLAGIOSCALE - API AUTO-SCALING TEST")
-    print("=" * 70)
-    print()
-    print("  This test sends concurrent requests to stress the API.")
-    print("  The autoscaler monitors p95 latency and scales API replicas.")
-    print("  Nginx dynamically distributes traffic across all replicas.")
-    print()
+    print("=" * 66)
+    print("  API AUTO-SCALING DEMO — live request count drives replica count")
+    print("=" * 66)
 
-    # --- Step 1: Current State ---
-    print("[1/5] CURRENT STATE")
-    print("-" * 70)
-    containers = get_api_containers()
-    metrics = get_api_metrics()
-    auto_metrics = get_autoscaler_metrics()
-    print(f"  API replicas:  {len(containers)}")
-    for c in containers:
-        print(f"    - {c['name']}: {c['status']}")
-    if metrics:
-        print(f"  Current p95:   {metrics.get('p95_ms', 0):.1f}ms")
-        print(f"  Request count: {metrics.get('request_count', 0)}")
-    if auto_metrics:
-        print(f"  Autoscaler p95: {auto_metrics.get('api_p95_ms', 0):.1f}ms")
-        print(f"  Scale events:   {int(auto_metrics.get('scale_events', 0))}")
-    print(f"  Workers:        {get_worker_count()}")
+    client = PlagioClient()
+    if not client.login_or_signup():
+        return 1
+
+    fleet = fleet_metrics()
+    initial = len(fleet)
+    print(f"\n  Autoscaler rule : active_requests > {SCALE_UP_THRESHOLD} -> +1 replica"
+          f"   |   < {SCALE_DOWN_THRESHOLD} -> remove  (30s cooldown, cap {MAX_API})")
+    print(f"  Load simulation : {NUM_THREADS} threads held until {TARGET_REPLICAS} "
+          f"replicas are running")
+    print(f"  Load generator  : -> {API}/health via nginx (100ms delay per request)")
+    print(f"  API replicas    : {initial} {[short(f['name']) for f in fleet]}")
     pause()
 
-    # --- Step 2: Login ---
-    print("\n[2/5] AUTHENTICATING")
-    print("-" * 70)
-    session, csrf = login()
-    if not session:
-        print("  Cannot continue without login.")
-        return
-    print("  Logged in successfully")
-    pause()
+    # ── Phase 1: start the load ───────────────────────────────────────────
+    print(f"\n[1/2] STARTING LOAD ({NUM_THREADS} threads)")
+    print("-" * 66)
+    stop = threading.Event()
+    sent = [0]
+    errs = [0]
+    local = threading.local()  # one pooled Session per thread: no TCP churn
 
-    # --- Step 3: Baseline Request ---
-    print("\n[3/5] BASELINE MEASUREMENT")
-    print("-" * 70)
-    print("  Sending 20 sequential requests to measure baseline latency...")
-    latencies = []
-    for i in range(20):
-        elapsed, status = single_request(session, "/health")
-        latencies.append(elapsed)
-        print(f"    [{i+1:>2}/20] {elapsed*1000:>6.1f}ms  status={status}")
-    avg = sum(latencies) / len(latencies) * 1000
-    print(f"\n  Baseline avg: {avg:.1f}ms")
-    pause()
+    def get_session():
+        if not hasattr(local, "s"):
+            s = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=4)
+            s.mount("http://", adapter)
+            s.mount("https://", adapter)
+            local.s = s
+        return local.s
 
-    # --- Step 4: Stress Test ---
-    print("\n[4/5] STRESS TEST - CONCURRENT REQUESTS")
-    print("-" * 70)
-    endpoints = [
-        "/health", "/metrics",
-        "/portal/assignments",
-    ]
+    def load_worker():
+        while not stop.is_set():
+            try:
+                get_session().get(f"{API}/health", timeout=10)
+                sent[0] += 1
+            except Exception:
+                errs[0] += 1
 
-    # Phase 1: 20 concurrent requests
-    print("  Phase 1: 20 concurrent requests...")
-    results = []
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [
-            pool.submit(single_request, session, endpoints[i % len(endpoints)])
-            for i in range(20)
-        ]
-        for f in as_completed(futures):
-            results.append(f.result())
-    p95_sorted = sorted([r[0] for r in results])
-    p95_idx = int(len(p95_sorted) * 0.95)
-    p95 = p95_sorted[p95_idx] * 1000
-    errors = sum(1 for _, s in results if s != 200)
-    print(f"    Done: p95={p95:.1f}ms, errors={errors}")
-    pause()
+    threads = [threading.Thread(target=load_worker, daemon=True) for _ in range(NUM_THREADS)]
+    for t in threads:
+        t.start()
+    print("  Hammering /health — each in-flight request counts toward the threshold")
 
-    # Phase 2: 50 concurrent requests (this should trigger scaling)
-    print("  Phase 2: 50 concurrent requests (scaling trigger)...")
-    results2 = []
-    with ThreadPoolExecutor(max_workers=50) as pool:
-        futures = [
-            pool.submit(single_request, session, endpoints[i % len(endpoints)])
-            for i in range(50)
-        ]
-        for f in as_completed(futures):
-            results2.append(f.result())
-    p95_sorted2 = sorted([r[0] for r in results2])
-    p95_idx2 = int(len(p95_sorted2) * 0.95)
-    p95_2 = p95_sorted2[p95_idx2] * 1000
-    errors2 = sum(1 for _, s in results2 if s != 200)
-    print(f"    Done: p95={p95_2:.1f}ms, errors={errors2}")
-    pause()
+    # Remember existing events so only NEW autoscaler decisions get printed
+    seen_events = {e.get("timestamp") for e in
+                   autoscaler_events(limit=30, message_prefixes=("scaled",))}
 
-    # --- Step 5: Watch for Scaling ---
-    print("\n[5/5] WATCHING FOR API SCALING")
-    print("-" * 70)
-    print("  Polling every 3s. The autoscaler checks p95 every 5s...")
-    print(f"  Threshold: scale UP if p95 > 500ms, scale DOWN if p95 < 200ms")
-    print()
+    # ── Phase 2: single live table from load start to scale-down ─────────
+    print("\n[2/2] LIVE — ACTIVE REQUESTS DRIVE THE AUTOSCALER")
+    print("-" * 66)
+    print(f"  {'Time':>5}  {'Active':>14}  {'Repl':>4}  Per-replica (active/served)")
+    print(f"  {'-'*5}  {'-'*14}  {'-'*4}  {'-'*40}")
 
     start = time.time()
-    initial_events = int(auto_metrics.get("scale_events", 0))
-    saw_scale = False
+    peak_active, max_repl = 0, initial
+    scaled_up = scaled_down = False
+    load_running = True
 
-    for tick in range(20):
+    while time.time() - start < 480:  # 8-minute budget
         time.sleep(3)
         elapsed = int(time.time() - start)
-        containers_now = get_api_containers()
-        metrics_now = get_api_metrics()
-        auto_now = get_autoscaler_metrics()
-        n_api = len(containers_now)
-        p95_now = metrics_now.get("p95_ms", 0) if metrics_now else 0
-        events_now = int(auto_now.get("scale_events", 0))
-        new_events = events_now - initial_events
+        fleet = fleet_metrics()
+        n = len(fleet)
+        active = sum(f["active"] for f in fleet)
+        served = sum(f["total"] or 0 for f in fleet)
+        peak_active = max(peak_active, active)
+        max_repl = max(max_repl, n)
 
-        marker = ""
-        if new_events > 0 and not saw_scale:
-            saw_scale = True
-            marker = " <- SCALE EVENT"
-        elif new_events > 0:
-            marker = f" <- {new_events} event(s)"
+        if load_running and active > SCALE_UP_THRESHOLD:
+            zone = "!UP (>" + str(SCALE_UP_THRESHOLD) + ")"
+        elif not load_running and n > initial:
+            zone = "cooling "
+        elif not load_running and active < SCALE_DOWN_THRESHOLD:
+            zone = "!DOWN(<" + str(SCALE_DOWN_THRESHOLD) + ")"
+        else:
+            zone = "between"
 
-        names = ", ".join(c["name"].replace("plagioscale-", "") for c in containers_now)
-        print(f"  [{elapsed:>3}s] API: {n_api} ({names}) | p95: {p95_now:.1f}ms{marker}")
+        detail = "  ".join(
+            f"{short(f['name'])}:{f['active']}/{f['total']}"
+            for f in fleet)
+        event = ""
+        if n > initial and not scaled_up:
+            scaled_up = True
+            event = f"<-- REPLICAS {initial} -> {n}"
 
-        # After stress test, p95 will drop quickly - wait for scale-down
-        if tick > 5 and n_api <= 1 and p95_now < 200:
-            print("\n  p95 is low and only 1 replica - scale-down will happen if load was high")
+        print(f"  {elapsed:>4}s  {active:>6} {zone:<8} {n:>3}   {detail}  {event}")
+
+        # Inline autoscaler decisions (API ones only)
+        for e in reversed(autoscaler_events(limit=10, message_prefixes=("scaled api",))):
+            ts = e.get("timestamp")
+            if ts and ts not in seen_events:
+                seen_events.add(ts)
+                print(f"        {'':<14}  {'':>3}   >>> autoscaler: "
+                      f"{e.get('message')}{fmt_extra(e)}")
+
+        # Keep the load on until TARGET_REPLICAS are running — every extra
+        # replica costs one 30s cooldown window of sustained !UP traffic.
+        if load_running and scaled_up and n >= TARGET_REPLICAS:
+            stop.set()
+            for t in threads:
+                t.join(timeout=5)
+            load_running = False
+            print(f"        {'':<14}  {'':>3}   ... target {TARGET_REPLICAS} replicas "
+                  f"reached; stopping load")
+        elif load_running and scaled_up and elapsed > 180:
+            stop.set()
+            for t in threads:
+                t.join(timeout=5)
+            load_running = False
+            print(f"        {'':<14}  {'':>3}   ... target not reached within 180s; "
+                  f"stopping load anyway")
+
+        if scaled_up and not load_running and n <= initial:
+            scaled_down = True
+            print(f"        {'':<14}  {'':>3}   <-- BACK TO BASELINE ({n})")
             break
 
-    # --- Summary ---
-    print("\n" + "=" * 70)
-    print("  RESULTS SUMMARY")
-    print("=" * 70)
-    print(f"  Baseline p95:       {avg:.1f}ms")
-    print(f"  Under load p95:     {p95_2:.1f}ms")
-    print(f"  API replicas seen:  {len(containers)} -> {len(get_api_containers())}")
-    print(f"  Scale events:       {new_events if saw_scale else 'none (p95 stayed under threshold)'}")
-    print()
-    print("  HOW IT WORKS:")
-    print("  1. API /metrics endpoint tracks request latency (p50/p95/p99)")
-    print("  2. Autoscaler polls /metrics every 5s from each API replica")
-    print("  3. p95 > 500ms -> creates new API container via Docker SDK")
-    print("  4. p95 < 200ms -> stops extra API containers")
-    print("  5. Nginx resolver re-resolves api-service DNS on each request")
-    print("  6. Traffic distributed across all running replicas")
-    print("  7. Cooldown: 60s between API scale events")
-    print("  8. Limits: min=1, max=5 API replicas")
-    print("=" * 70)
+    stop.set()
+
+    # ── Results ──────────────────────────────────────────────────────────
+    events = autoscaler_events(limit=6, message_prefixes=("scaled api",))
+    if events:
+        print("\n  Autoscaler decisions this run:")
+        for e in reversed(events):
+            print(f"    [{str(e.get('timestamp'))[11:19]}] {e.get('message')}{fmt_extra(e)}")
+
+    print("\n  RESULTS")
+    print("-" * 66)
+    print(f"  Initial replicas     : {initial}")
+    print(f"  Target replicas      : {TARGET_REPLICAS} "
+          f"(reached: {'YES' if max_repl >= TARGET_REPLICAS else 'NO'})")
+    print(f"  Peak replicas        : {max_repl} (cap {MAX_API})")
+    print(f"  Peak active requests : {peak_active}")
+    print(f"  Requests sent        : {sent[0]} (errors: {errs[0]})")
+    print(f"  Scale UP trigger     : active > {SCALE_UP_THRESHOLD} "
+          f"-> {'YES' if scaled_up else 'NO'}")
+    print(f"  Scale DOWN trigger   : back to baseline -> {'YES' if scaled_down else 'NO'}")
+    return 0 if (scaled_up and scaled_down) else 1
 
 
 if __name__ == "__main__":
     try:
-        main()
+        code = main()
     except KeyboardInterrupt:
-        print("\n\nInterrupted.")
+        print("\nInterrupted.")
+        code = 130
     finally:
         pause("\nPress Enter to exit...")
+    sys.exit(code)

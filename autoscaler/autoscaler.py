@@ -26,12 +26,12 @@ class Autoscaler:
         self.min_workers = int(os.getenv("MIN_WORKERS", 1))
         self.max_workers = int(os.getenv("MAX_WORKERS", 5))
 
-        # API scaling (latency-based)
-        self.api_scale_up_ms = float(os.getenv("API_SCALE_UP_MS", 500))
-        self.api_scale_down_ms = float(os.getenv("API_SCALE_DOWN_MS", 200))
+        # API scaling (request-count-based)
+        self.api_scale_up_threshold = int(os.getenv("API_SCALE_UP_THRESHOLD", 20))
+        self.api_scale_down_threshold = int(os.getenv("API_SCALE_DOWN_THRESHOLD", 5))
         self.min_api = int(os.getenv("MIN_API", 1))
         self.max_api = int(os.getenv("MAX_API", 5))
-        self.api_cooldown = int(os.getenv("API_COOLDOWN_SECONDS", 60))
+        self.api_cooldown = int(os.getenv("API_COOLDOWN_SECONDS", 30))
 
         # Shared
         self.cooldown_seconds = int(os.getenv("COOLDOWN_SECONDS", 60))
@@ -42,6 +42,7 @@ class Autoscaler:
         try:
             self.redis_client = redis.Redis(
                 host=self.redis_host, port=self.redis_port,
+                password=os.getenv("REDIS_PASSWORD") or None,
                 decode_responses=True, socket_connect_timeout=5,
             )
             self.redis_client.ping()
@@ -68,7 +69,7 @@ class Autoscaler:
         self.P_WORKERS = Gauge("plagioscale_workers", "Worker containers")
         self.P_API = Gauge("plagioscale_api_replicas", "API replicas")
         self.P_QUEUE = Gauge("plagioscale_queue_length", "Job queue length")
-        self.P_API_P95 = Gauge("plagioscale_api_p95_ms", "API p95 latency ms")
+        self.P_API_ACTIVE = Gauge("plagioscale_api_active_requests", "API active requests")
         self.P_SCALE_EVENTS = Counter("plagioscale_scale_events_total", "Scale events")
 
         try:
@@ -80,10 +81,15 @@ class Autoscaler:
         self.log(f"Config: workers({self.min_workers}-{self.max_workers}, "
                  f"up>{self.scale_up_threshold}, down<{self.scale_down_threshold}) "
                  f"api({self.min_api}-{self.max_api}, "
-                 f"up>{self.api_scale_up_ms}ms, down<{self.api_scale_down_ms}ms)")
+                 f"up>{self.api_scale_up_threshold} req, down<{self.api_scale_down_threshold} req)")
 
     def log(self, msg):
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [Autoscaler] {msg}", flush=True)
+        line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [Autoscaler] {msg}"
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            # Windows consoles may not support unicode glyphs (✓/✗)
+            print(line.encode("ascii", "replace").decode(), flush=True)
 
     def publish_event(self, level, message, **extra):
         if not self.redis_client:
@@ -205,8 +211,10 @@ class Autoscaler:
         except Exception:
             return self.min_api
 
-    def get_api_p95(self):
-        """Query p95 latency from a random running API replica."""
+    def get_api_active_requests(self):
+        """Fleet-wide active request count: the MAX across all running API
+        replicas. (First-replica-only polling caused false scale-downs when
+        nginx happened to send one replica little traffic.)"""
         if not self.docker_client:
             return 0
         try:
@@ -216,25 +224,26 @@ class Autoscaler:
             running = [c for c in containers if c.status == "running"]
             if not running:
                 return 0
-            # Try each container's IP on the internal network
+            max_active = 0
             for c in running:
                 networks = c.attrs["NetworkSettings"]["Networks"]
                 for net_name, net_info in networks.items():
                     ip = net_info.get("IPAddress")
-                    if ip:
-                        try:
-                            url = f"http://{ip}:8000/metrics"
-                            req = urllib.request.urlopen(url, timeout=3)
-                            data = json.loads(req.read())
-                            p95 = data.get("p95_ms", 0)
-                            try:
-                                self.P_API_P95.set(p95)
-                            except Exception:
-                                pass
-                            return p95
-                        except Exception:
-                            continue
-            return 0
+                    if not ip:
+                        continue
+                    try:
+                        url = f"http://{ip}:8000/metrics"
+                        req = urllib.request.urlopen(url, timeout=3)
+                        data = json.loads(req.read())
+                        active = data.get("active_requests", 0)
+                        max_active = max(max_active, active)
+                    except Exception:
+                        continue
+            try:
+                self.P_API_ACTIVE.set(max_active)
+            except Exception:
+                pass
+            return max_active
         except Exception:
             return 0
 
@@ -259,7 +268,7 @@ class Autoscaler:
                     tmpl = containers[0]
                     image_ref = tmpl.attrs["Config"]["Image"]
                     env = tmpl.attrs["Config"]["Env"]
-                    networks = tmpl.attrs["Config"]["NetworkSettings"]["Networks"]
+                    networks = tmpl.attrs["NetworkSettings"]["Networks"]
                     net_name = list(networks.keys())[0] if networks else None
                     mounts = tmpl.attrs["Mounts"]
 
@@ -322,10 +331,10 @@ class Autoscaler:
         queue_length = self.get_queue_length()
         workers = self.get_current_workers()
         api_count = self.get_current_api_count()
-        p95 = self.get_api_p95()
+        active = self.get_api_active_requests()
 
-        self.log(f"Queue: {queue_length} | Workers: {workers}/{self.max_workers} | API: {api_count}/{self.max_api} | p95: {p95:.0f}ms")
-        self.publish_event("debug", "Tick", queue_length=queue_length, workers=workers, api_replicas=api_count)
+        self.log(f"Queue: {queue_length} | Workers: {workers}/{self.max_workers} | API: {api_count}/{self.max_api} | Active req: {active}")
+        self.publish_event("debug", "Tick", queue_length=queue_length, workers=workers, api_replicas=api_count, active_requests=active)
 
         try:
             self.P_WORKERS.set(workers)
@@ -343,11 +352,11 @@ class Autoscaler:
             elif queue_length < self.scale_down_threshold and workers > self.min_workers:
                 self.scale_workers(max(workers - 1, self.min_workers))
 
-        # API scaling (latency-based)
+        # API scaling (request-count-based)
         if (now - self.last_api_scale) >= self.api_cooldown:
-            if p95 > self.api_scale_up_ms and api_count < self.max_api:
+            if active > self.api_scale_up_threshold and api_count < self.max_api:
                 self.scale_api(min(api_count + 1, self.max_api))
-            elif p95 < self.api_scale_down_ms and p95 > 0 and api_count > self.min_api:
+            elif active < self.api_scale_down_threshold and api_count > self.min_api:
                 self.scale_api(max(api_count - 1, self.min_api))
 
     def run(self):

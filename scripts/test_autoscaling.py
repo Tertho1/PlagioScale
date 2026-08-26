@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Demo Script 2: Queue-Based Autoscaling
-Submits jobs rapidly and watches workers scale from 1 -> N.
+Submits jobs rapidly and watches workers scale from 1 → N.
 Run: python scripts/demo_autoscaling.py
 """
 
@@ -11,12 +11,20 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 import redis
 import requests
 
-API = os.getenv("API_URL", "http://localhost:3050/api")
-REDIS = redis.Redis(host="localhost", port=6379, decode_responses=True, password=os.getenv("REDIS_PASSWORD", "plagio_redis_pass"))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+API = "http://localhost:3050/api"
+REDIS = redis.Redis(
+    host="localhost", port=6379,
+    password=os.getenv("REDIS_PASSWORD", "plagio_redis_pass"),
+    decode_responses=True,
+)
 
 SAMPLE_TEXTS = [
     "Machine learning is a powerful tool for data analysis and prediction in modern computing.",
@@ -46,10 +54,22 @@ def pause(msg="\nPress Enter to continue..."):
     input(msg)
 
 
+def _run_with_retry(cmd, retries=4, delay=2):
+    """subprocess.run with retry — survives transient WinError 1455
+    (commit-limit spikes while worker containers are warming models)."""
+    last = None
+    for attempt in range(retries):
+        try:
+            return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        except OSError as e:
+            last = e
+            time.sleep(delay)
+    raise last
+
+
 def get_workers():
-    raw = subprocess.run(
-        "docker ps --format {{.Names}}",
-        shell=True, capture_output=True, text=True
+    raw = _run_with_retry(
+        "docker ps --format {{.Names}}"
     ).stdout.strip()
     return [n for n in raw.splitlines() if "worker" in n.lower() and "autoscaler" not in n.lower()]
 
@@ -62,20 +82,20 @@ def get_queue_depth():
 
 
 def login():
-    """Login and return cookies + CSRF token."""
+    """Login and return a session with Bearer auth + CSRF cookie."""
     s = requests.Session()
-    # Get CSRF token from login page
-    r = s.get(f"{API}/auth/login", timeout=5)
-    csrf = s.cookies.get("csrf_token", "")
-    # Login
     r = s.post(f"{API}/auth/login", json={
         "email": os.getenv("DEMO_EMAIL", "admin@test.com"),
         "password": os.getenv("DEMO_PASSWORD", "admin123"),
-    }, headers={"X-CSRF-Token": csrf}, timeout=5)
+    }, timeout=5)
     if r.status_code != 200:
-        print(f"  [--] Login failed: {r.status_code} {r.text[:100]}")
+        print(f"  ✗ Login failed: {r.status_code} {r.text[:100]}")
         return None, None
+    token = r.json().get("access_token", "")
+    s.headers["Authorization"] = f"Bearer {token}"
     csrf = s.cookies.get("csrf_token", "")
+    if csrf:
+        s.headers["X-CSRF-Token"] = csrf
     return s, csrf
 
 
@@ -84,9 +104,9 @@ def create_batch(session, csrf, name):
     r = session.post(f"{API}/portal/assignments", json={
         "name": name,
         "expected_count": 20,
-    }, headers={"X-CSRF-Token": csrf}, timeout=5)
+    }, timeout=5)
     if r.status_code != 200:
-        print(f"  [--] Create batch failed: {r.status_code}")
+        print(f"  ✗ Create batch failed: {r.status_code}")
         return None
     return r.json().get("batch_id")
 
@@ -105,7 +125,7 @@ def submit_file(session, csrf, batch_id, roll, text):
                 "name": f"Student {roll}",
                 "email": f"{roll}@test.com",
             }, files={"file": (f"{roll}.txt", f, "text/plain")},
-            headers={"X-CSRF-Token": csrf}, timeout=10)
+            timeout=10)
         return r.status_code == 200
     finally:
         os.unlink(tmp_path)
@@ -115,15 +135,14 @@ def cleanup_batch(session, csrf, batch_id):
     """Delete a temporary batch."""
     if session and batch_id:
         try:
-            session.delete(f"{API}/portal/assignments/{batch_id}",
-                           headers={"X-CSRF-Token": csrf}, timeout=5)
+            session.delete(f"{API}/portal/assignments/{batch_id}", timeout=5)
         except Exception:
             pass
 
 
 def main():
     print("=" * 70)
-    print("  PLAGIOSCALE - AUTOSCALING DEMO")
+    print("  PLAGIOSCALE — AUTOSCALING DEMO")
     print("=" * 70)
     print()
     print("  This demo shows how the autoscaler reacts to queue depth.")
@@ -136,7 +155,7 @@ def main():
     print("-" * 70)
     workers = get_workers()
     queue = get_queue_depth()
-    print(f"  Workers running: {len(workers)} - {', '.join(workers)}")
+    print(f"  Workers running: {len(workers)} — {', '.join(workers)}")
     print(f"  Queue depth:     {queue} jobs")
     pause()
 
@@ -145,99 +164,130 @@ def main():
     print("-" * 70)
     session, csrf = login()
     if not session:
-        print("  [--] Cannot continue without login. Set DEMO_EMAIL/DEMO_PASSWORD env vars.")
+        print("  ✗ Cannot continue without login. Set DEMO_EMAIL/DEMO_PASSWORD env vars.")
         return
-    print("  [OK] Logged in")
+    print("  ✓ Logged in")
 
     batch_id = create_batch(session, csrf, "Autoscale Demo")
     if not batch_id:
-        print("  [--] Cannot create batch")
+        print("  ✗ Cannot create batch")
         return
-    print(f"  [OK] Created batch: {batch_id[:8]}...")
+    print(f"  ✓ Created batch: {batch_id[:8]}...")
 
     # Submit files
     print("  Submitting 10 files...")
     for i in range(10):
         text = SAMPLE_TEXTS[i % len(SAMPLE_TEXTS)]
         ok = submit_file(session, csrf, batch_id, f"AS{i+1:03d}", text)
-        status = "[OK]" if ok else "[--]"
+        status = "✓" if ok else "✗"
         print(f"    {status} Submission {i+1}/10")
     pause()
 
     # --- Step 3: Enqueue Jobs ---
     print("\n[3/5] ENQUEUING JOBS")
     print("-" * 70)
-    # Enqueue 15 BATCH_COMPUTE jobs directly to Redis
-    for i in range(15):
+    JOBS = int(os.getenv("DEMO_JOBS", "100"))
+    # Enqueue BATCH_COMPUTE jobs directly to Redis (full Job.to_json shape)
+    for i in range(JOBS):
         job_id = f"demo-{batch_id[:8]}-{i:03d}"
         payload = json.dumps({"type": "BATCH_COMPUTE", "batch_id": batch_id})
-        job = json.dumps({"job_id": job_id, "text": payload})
+        job = json.dumps({
+            "job_id": job_id,
+            "text": payload,
+            "status": "PENDING",
+            "result": None,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+        })
         REDIS.lpush("job_queue", job)
     queue_after = get_queue_depth()
-    print(f"  [OK] Enqueued 15 jobs -> queue depth now: {queue_after}")
+    print(f"  ✓ Enqueued {JOBS} jobs → queue depth now: {queue_after}")
     pause()
 
     # --- Step 4: Watch Scaling ---
     print("\n[4/5] WATCHING AUTOSCALER REACT")
     print("-" * 70)
-    print("  Polling every 3s. Watch for new worker containers to appear...")
-    print()
-    max_workers = len(workers)
-    scale_events = []
-    start = time.time()
+    up_th, down_th, cap = 10, 3, int(os.getenv("MAX_WORKERS", "3"))
+    cd_s = int(os.getenv("COOLDOWN_SECONDS", "10"))
+    print(f"  Rule: queue > {up_th} → scale up | queue < {down_th} → scale down")
+    print(f"  Limits: min 1 / max {cap} workers | Cooldown: {cd_s}s between events\n")
 
-    for tick in range(30):  # Poll for up to 90 seconds
+    known = set(get_workers())
+    max_seen = len(known)
+    scale_events = []
+    threshold_announced = False
+    last_event_t = None
+    start = time.time()
+    deadline = start + 480
+
+    while time.time() < deadline:
         time.sleep(3)
-        current_workers = get_workers()
+        now_list = get_workers()
         queue_depth = get_queue_depth()
+        n = len(now_list)
         elapsed = int(time.time() - start)
 
-        n_workers = len(current_workers)
-        if n_workers > max_workers:
-            new = set(current_workers) - set(workers)
-            scale_events.append(("UP", elapsed, n_workers, new))
-            max_workers = n_workers
+        if n > len(known):
+            new = sorted(set(now_list) - known)
+            known = set(now_list)
+            max_seen = max(max_seen, n)
+            scale_events.append(("UP", elapsed, n))
+            last_event_t = elapsed
+            print(f"  [{elapsed:>3}s] ▲ SCALE UP   → {n} workers (+{', '.join(new)}) | Queue: {queue_depth}")
 
-        marker = " <- SCALE UP" if n_workers > len(workers) else ""
-        print(f"  [{elapsed:>3}s] Workers: {n_workers} | Queue: {queue_depth:>3}{marker}")
+        elif n < len(known):
+            gone = sorted(known - set(now_list))
+            known = set(now_list)
+            scale_events.append(("DOWN", elapsed, n))
+            last_event_t = elapsed
+            print(f"  [{elapsed:>3}s] ▼ SCALE DOWN → {n} workers (-{', '.join(gone)}) | Queue: {queue_depth}")
 
-        if queue_depth == 0 and tick > 3:
-            print("\n  [OK] Queue drained - autoscaler will scale down shortly")
-            break
+        else:
+            if queue_depth > up_th and not threshold_announced:
+                print(f"  [{elapsed:>3}s] ⚠ Queue depth {queue_depth} exceeds threshold ({up_th})")
+                threshold_announced = True
+            elif queue_depth <= down_th:
+                threshold_announced = False
 
-    # Wait for scale-down
-    print("\n  Waiting for scale-down...")
-    for _ in range(10):
-        time.sleep(3)
-        current_workers = get_workers()
-        queue_depth = get_queue_depth()
-        n_workers = len(current_workers)
-        print(f"  Workers: {n_workers} | Queue: {queue_depth}")
-        if n_workers <= 1 and queue_depth == 0:
-            break
+            if queue_depth == 0 and n == 1:
+                print(f"  [{elapsed:>3}s] Workers: {n}/{cap} | Queue: {queue_depth} — settled at baseline")
+                break
+
+            cooling = last_event_t is not None and (elapsed - last_event_t) < cd_s
+            note = ""
+            if n < cap and queue_depth > up_th:
+                note = (f" | ⏳ scale-up pending (cooldown {cd_s - (elapsed - last_event_t):.0f}s left)"
+                        if cooling else " | ⏳ scale-up pending (next autoscaler tick)")
+            elif n > 1 and queue_depth < down_th:
+                note = (" | ⏳ scale-down pending (cooldown)" if cooling
+                        else " | ⏳ scale-down pending (graceful stop / next tick)")
+            print(f"  [{elapsed:>3}s] Workers: {n}/{cap} | Queue: {queue_depth:>3}{note}")
 
     # --- Step 5: Summary ---
+    ups = [(t, w) for d, t, w in scale_events if d == "UP"]
+    downs = [(t, w) for d, t, w in scale_events if d == "DOWN"]
     print("\n[5/5] SUMMARY")
     print("-" * 70)
-    print(f"  Max workers observed:  {max_workers}")
-    print(f"  Scale-up events:       {len(scale_events)}")
-    print(f"  Time to drain queue:   {int(time.time() - start)}s")
-    if scale_events:
-        for direction, t, nw, details in scale_events:
-            print(f"    ^ t={t}s: scaled to {nw} workers")
+    print(f"  Max workers observed: {max_seen}")
+    print(f"  Scale-up events:      {len(ups)}" +
+          ("   " + ", ".join(f"t+{t}s→{w}" for t, w in ups) if ups else ""))
+    print(f"  Scale-down events:    {len(downs)}" +
+          ("   " + ", ".join(f"t+{t}s→{w}" for t, w in downs) if downs else ""))
+    print(f"  Total time:           {int(time.time() - start)}s")
     print()
     print("  HOW IT WORKS:")
     print("  1. Autoscaler polls Redis queue depth every 5s")
-    print("  2. Queue > 10 -> creates new worker via Docker SDK")
-    print("  3. Queue < 3 -> stops extra workers")
-    print("  4. Cooldown: 20s between scale events")
-    print("  5. Limits: min=1, max=5 workers")
+    print("  2. Queue > 10 → creates new worker via Docker SDK")
+    print("  3. Queue < 3 → stops extra workers")
+    print(f"  4. Cooldown: {cd_s}s between scale events")
+    print(f"  5. Limits: min=1, max={cap} workers on this machine")
     print("=" * 70)
 
     # Cleanup
     print("\nCleaning up...")
     cleanup_batch(session, csrf, batch_id)
-    print("  [OK] Demo batch deleted")
+    print("  ✓ Demo batch deleted")
 
 
 if __name__ == "__main__":

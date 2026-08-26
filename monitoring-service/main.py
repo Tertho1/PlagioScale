@@ -19,12 +19,14 @@ app.mount('/metrics', make_asgi_app())
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "plagioscale")
 EVENTS_KEY = os.getenv("AUTOSCALER_EVENTS_KEY", "autoscaler_events")
 
 
 def get_redis_client():
-    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                       decode_responses=True)
 
 
 def get_docker_client():
@@ -68,6 +70,14 @@ def overview():
     except Exception:
         pass
 
+    api_replicas = 0
+    try:
+        d2 = get_docker_client()
+        api_containers = d2.containers.list(filters={"label": "com.docker.compose.service=api-service"})
+        api_replicas = len([c for c in api_containers if c.status == "running"])
+    except Exception:
+        pass
+
     if workers == 0:
       try:
         r = get_redis_client()
@@ -88,6 +98,7 @@ def overview():
       "timestamp": now,
       "queue_length": queue_length,
       "workers": workers,
+      "api_replicas": api_replicas,
       "jobs": {
         "completed": completed,
         "processing": processing,
@@ -184,6 +195,7 @@ def dashboard():
       <div class=\"grid\">
         <div class=\"card\"><div class=\"label\">Queue Length</div><div id=\"queue\" class=\"value\">0</div></div>
         <div class=\"card\"><div class=\"label\">Workers Running</div><div id=\"workers\" class=\"value\">0</div></div>
+        <div class=\"card\"><div class=\"label\">API Replicas</div><div id=\"apiReplicas\" class=\"value\">1</div></div>
         <div class=\"card\"><div class=\"label\">Completed Jobs</div><div id=\"completed\" class=\"value\">0</div></div>
         <div class=\"card\"><div class=\"label\">Processing Jobs</div><div id=\"processing\" class=\"value\">0</div></div>
       </div>
@@ -218,6 +230,7 @@ def dashboard():
 
           document.getElementById('queue').textContent = overview.queue_length;
           document.getElementById('workers').textContent = overview.workers;
+          document.getElementById('apiReplicas').textContent = overview.api_replicas || 1;
           document.getElementById('completed').textContent = overview.jobs.completed;
           document.getElementById('processing').textContent = overview.jobs.processing;
           document.getElementById('ts').textContent = 'Last update: ' + new Date().toLocaleTimeString();
@@ -241,7 +254,7 @@ def dashboard():
             p.className = 'line';
             p.style = cssLevel(evt.level);
             p.textContent = '[' + (evt.timestamp || '') + '] [' + ((evt.level || 'info').toUpperCase()) + '] '
-              + (evt.message || '') + ' | queue=' + (evt.queue_length ?? '-') + ' workers=' + (evt.workers ?? '-');
+              + (evt.message || '') + ' | queue=' + (evt.queue_length ?? '-') + ' workers=' + (evt.workers ?? '-') + ' api=' + (evt.api_replicas ?? '-');
             list.appendChild(p);
           });
         } catch (e) {

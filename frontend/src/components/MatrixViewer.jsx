@@ -197,7 +197,13 @@ export default function MatrixViewer({open, onClose, leftSubmission, rightSubmis
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url; a.download = `report_${batchId.slice(0,8)}.pdf`;
-                a.click(); URL.revokeObjectURL(url);
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                // Delayed revoke: revoking synchronously can cancel the
+                // download in some browsers, yielding an empty file.
+                setTimeout(() => URL.revokeObjectURL(url), 2000);
               } catch (e) {
                 showToast(e.message || "Download failed", "error");
               }
