@@ -1,168 +1,138 @@
+#!/usr/bin/env python3
 """
-Seed data script — populates PostgreSQL with demo batches, submissions, users.
+Seed demo data through the live API: an instructor account, N assignments,
+M student submissions each (with some deliberately plagiarised variants),
+then waits until every batch has a computed similarity matrix.
+
+Goes through the API instead of raw SQL so users are bcrypt-hashed correctly,
+files land on the uploads volume, and the worker computes REAL similarity and
+AI scores (the old SQL version inserted into tables that no longer exist).
 
 Usage:
-    python scripts/seed_test_data.py          # default: 2 batches, 5 students each
+    python scripts/seed_test_data.py                        # 2 batches x 5
     python scripts/seed_test_data.py --batches 3 --students 10
+    python scripts/seed_test_data.py --email me@x.dev --password 'S3cret!pw'
 """
 
 import argparse
-import hashlib
-
-# Add project root to path
 import os
-import random
 import sys
-import uuid
-from datetime import datetime, timezone
+import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import requests
 
-from shared.database import get_db_connection, init_db
-from shared.models import UserRole
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import API, PlagioClient
 
-SAMPLE_TEXTS = [
+BASE_TEXTS = [
     "Machine learning is a powerful tool for data analysis and prediction in modern computing systems.",
     "Cloud computing revolutionizes how we deploy and scale applications across distributed infrastructure.",
-    "Artificial intelligence is transforming industries globally through automation and intelligent decision-making.",
+    "Artificial intelligence is transforming industries globally through automation and intelligent decisions.",
     "Distributed systems enable scalable applications by partitioning work across multiple nodes efficiently.",
     "Containerization with Docker simplifies deployment by packaging applications with their dependencies.",
-    "The rapid advancement in technology continues to reshape society and the way we interact with digital systems.",
     "Data science combines statistics and programming to extract meaningful insights from complex datasets.",
-    "Microservices architecture allows independent scaling of services while maintaining loose coupling.",
-    "Natural language processing enables computers to understand and generate human language effectively.",
-    "Cybersecurity frameworks protect organizations from evolving threats through layered defense mechanisms.",
-    "Machine learning models can identify patterns in data that humans might overlook during analysis.",
-    "Cloud-native applications leverage containers and orchestration for resilient deployment at scale.",
-    "Deep learning networks have achieved remarkable results in image recognition and natural language tasks.",
-    "Agile development methodologies emphasize iterative progress through cross-functional team collaboration.",
-    "Blockchain technology provides decentralized consensus mechanisms for trustless transaction verification.",
-    "Edge computing brings computation closer to data sources reducing latency for real-time applications.",
-    "Quantum computing promises exponential speedup for certain classes of mathematical optimization problems.",
-    "DevOps practices bridge the gap between development and operations through continuous automation pipelines.",
-    "The Internet of Things connects billions of devices creating vast networks of sensor data.",
-    "Version control systems like Git enable collaborative software development with comprehensive history tracking.",
+    "Microservices architecture allows independent scaling of services while maintaining loose coupling between components.",
+    "Natural language processing enables computers to understand and generate human language effectively at scale.",
 ]
+NAMES = ["alice", "bob", "charlie", "diana", "eve", "frank", "grace", "henry",
+         "iris", "jack", "kate", "liam", "mia", "noah", "olivia", "peter"]
+
+FILLER = (" In addition, the study highlights trade-offs between latency and "
+          "throughput that practitioners should weigh when selecting architectures.")
 
 
-def random_student_email(i):
-    names = ["alice", "bob", "charlie", "diana", "eve", "frank", "grace", "henry", "iris", "jack"]
-    domains = ["university.edu", "college.edu", "institute.edu"]
-    name = names[i % len(names)]
-    return f"{name}.{random.randint(1000, 9999)}@{random.choice(domains)}"
+def make_text(idx, plagiarise_from=None):
+    base = BASE_TEXTS[idx % len(BASE_TEXTS)]
+    if plagiarise_from is not None:
+        src = BASE_TEXTS[plagiarise_from % len(BASE_TEXTS)]
+        wa, wb = base.split(), src.split()
+        text = " ".join(wa[:len(wa) // 2] + wb[len(wb) // 2:])  # spliced mid-sentence copy
+    else:
+        text = base
+    return (text + FILLER * 2) * 2  # comfortably above minimum length
 
 
-def seed_database(batches=2, students_per_batch=5):
-    """Seed the database with test data."""
-    print(f"Seeding database: {batches} batches, {students_per_batch} students each")
+def wait_for_batch(client, batch_id, n_subs, timeout=180):
+    """Wait until all submissions have plagiarism scores (matrix computed)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = client.get(f"{API}/portal/submissions/{batch_id}", timeout=10)
+        subs = r.json().get("submissions", [])
+        if len(subs) >= n_subs and all(s.get("plagiarism_score") is not None for s in subs):
+            return True
+        time.sleep(3)
+    return False
 
-    if not init_db():
-        print("Error: Database not available")
-        sys.exit(1)
 
-    conn = get_db_connection()
-    if not conn:
-        print("Error: Could not connect to database")
-        sys.exit(1)
+def main():
+    parser = argparse.ArgumentParser(description="Seed demo data via the live API")
+    parser.add_argument("--batches", type=int, default=2)
+    parser.add_argument("--students", type=int, default=5)
+    parser.add_argument("--email", default="teacher@plagioscale.dev")
+    parser.add_argument("--password", default="Teach123!")
+    parser.add_argument("--name", default="Demo Teacher")
+    args = parser.parse_args()
 
-    cur = conn.cursor()
-    now = datetime.now(timezone.utc)
+    print("=" * 62)
+    print(f"Seeding {args.batches} batches x {args.students} students via the API")
+    print("=" * 62)
 
-    try:
-        # Create admin user
-        admin_id = str(uuid.uuid4())
-        admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
-        cur.execute(
-            "INSERT INTO users (id, email, password_hash, role, created_at) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
-            (admin_id, "admin@plagioscale.local", admin_hash, UserRole.ADMIN.value, now)
-        )
-        print("  ✓ Admin user: admin@plagioscale.local / admin123")
+    client = PlagioClient()
+    r = client.post(f"{API}/auth/login", json={"email": args.email, "password": args.password},
+                    timeout=10)
+    if r.status_code != 200:
+        r = client.post(f"{API}/auth/signup",
+                        json={"email": args.email, "password": args.password,
+                              "name": args.name, "role": "teacher"}, timeout=10)
+        if r.status_code != 200:
+            print(f"Could not create teacher account: {r.status_code} {r.text[:120]}")
+            print("(If it exists with a different password, pass --email/--password.)")
+            sys.exit(1)
+        client.login_or_signup(args.email, args.password, args.name)
+    else:
+        client.login_or_signup(args.email, args.password, args.name)
+    print(f"Authenticated as {args.email}")
 
-        # Create batches
-        for b in range(1, batches + 1):
-            batch_id = str(uuid.uuid4())
-            batch_name = f"Assignment {b} - {random.choice(['Essay', 'Report', 'Project', 'Thesis', 'Paper'])}"
-            cur.execute(
-                "INSERT INTO batches (id, name, created_by, created_at) VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
-                (batch_id, batch_name, admin_id, now)
-            )
-            print(f"\n  Batch {b}: {batch_name}")
+    created = []
+    for b in range(1, args.batches + 1):
+        name = f"Seeded Assignment {b} — {time.strftime('%m-%d %H:%M')}"
+        r = client.post(f"{API}/portal/assignments",
+                        json={"name": name, "expected_count": args.students}, timeout=10)
+        assert r.status_code == 200, r.text
+        batch = r.json()
+        batch_id, code = batch["batch_id"], batch["access_code"]
+        print(f"\nBatch {b}: {name}")
+        print(f"  id={batch_id}  access_code={code}")
 
-            # Create students and submissions
-            student_ids = []
-            for s in range(1, students_per_batch + 1):
-                user_id = str(uuid.uuid4())
-                email = random_student_email((b - 1) * students_per_batch + s)
-                pw_hash = hashlib.sha256(f"student{s}".encode()).hexdigest()
-                cur.execute(
-                    "INSERT INTO users (id, email, password_hash, role, created_at) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (email) DO NOTHING",
-                    (user_id, email, pw_hash, UserRole.STUDENT.value, now)
-                )
-                student_ids.append((user_id, email))
+        for s in range(1, args.students + 1):
+            roll = f"STU{s:03d}"
+            name_s = NAMES[(b - 1) * args.students + s - 1 % len(NAMES)]
+            # every ~3rd student plagiarises from the previous student's source
+            plag_from = (s - 2) if (s > 1 and s % 3 == 0) else None
+            text = make_text((b - 1) * args.students + s - 1, plag_from)
+            resp = client.post(f"{API}/portal/submit",
+                               files={"file": (f"{name_s}.txt", text.encode(), "text/plain")},
+                               data={"batch_id": batch_id, "roll": roll,
+                                     "name": f"{name_s.title()} Student"},
+                               timeout=15)
+            mark = "✓" if resp.status_code == 200 else "✗"
+            flag = " (plagiarised)" if plag_from is not None else ""
+            print(f"    {mark} {roll} {name_s}{flag}")
+            if resp.status_code == 429:      # rate limited — pace ourselves
+                time.sleep(5)
 
-                # Create submission
-                sub_id = str(uuid.uuid4())
-                # Pick a text and optionally introduce some plagiarism
-                base_idx = ((b - 1) * students_per_batch + s) % len(SAMPLE_TEXTS)
-                text = SAMPLE_TEXTS[base_idx]
-                # If s > 1, plagiarize from a random earlier submission in same batch
-                if s > 1 and random.random() > 0.3:
-                    prev_text = SAMPLE_TEXTS[(base_idx - 1) % len(SAMPLE_TEXTS)]
-                    # Mix texts for moderate similarity
-                    words_a = text.split()
-                    words_b = prev_text.split()
-                    mid = len(words_a) // 2
-                    text = " ".join(words_a[:mid] + words_b[mid:])
+        created.append((batch_id, code, name))
 
-                filename = f"{email.split('@')[0]}_submission.pdf"
-                cur.execute("""
-                    INSERT INTO submissions (id, batch_id, user_id, filename, original_text, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (sub_id, batch_id, user_id, filename, text, "COMPLETED", now))
+    print("\nWaiting for workers to compute similarity matrices...")
+    for batch_id, code, name in created:
+        ok = wait_for_batch(client, batch_id, args.students)
+        state = "ready ✓" if ok else "TIMEOUT (check worker logs)"
+        print(f"  {name[:40]:<42} {state}")
 
-                print(f"    ✓ {email:30s} → {filename}")
-
-            # Create similarity matrix for batch
-            matrix = []
-            for i, (uid_i, _) in enumerate(student_ids):
-                row = []
-                for j, (uid_j, _) in enumerate(student_ids):
-                    if i == j:
-                        row.append(0.0)
-                    elif j < i:
-                        # Use already computed value (matrix is symmetric)
-                        row.append(matrix[j][i])
-                    else:
-                        score = round(random.uniform(0.1, 0.95), 4)
-                        row.append(score)
-                matrix.append(row)
-
-            import json
-            cur.execute(
-                "INSERT INTO similarity_matrices (batch_id, matrix_data, created_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                (batch_id, json.dumps({"matrix": matrix}), now)
-            )
-            print("    ✓ Similarity matrix generated")
-
-        conn.commit()
-        print("\n✓ Database seeded successfully!")
-        print(f"  Batches: {batches}")
-        print(f"  Students: {batches * students_per_batch}")
-        print("  Admin login: admin@plagioscale.local / admin123")
-
-    except Exception as e:
-        conn.rollback()
-        print(f"\n✗ Error seeding database: {e}")
-        sys.exit(1)
-    finally:
-        cur.close()
-        conn.close()
+    print("\nSeed complete. Access codes:")
+    for batch_id, code, name in created:
+        print(f"  {code}  →  {name[:50]}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed database with demo data")
-    parser.add_argument("--batches", type=int, default=2, help="Number of batches to create")
-    parser.add_argument("--students", type=int, default=5, help="Students per batch")
-    args = parser.parse_args()
-
-    seed_database(batches=args.batches, students_per_batch=args.students)
+    main()

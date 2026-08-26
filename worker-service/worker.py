@@ -5,7 +5,9 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -132,6 +134,7 @@ class Worker:
             else:
                 print(f"[{WORKER_ID}] Moving job {job.job_id} to dead letter (exhausted retries)")
                 self.queue_client.redis_client.sadd(DEAD_LETTER_KEY, job.job_id)
+                self.queue_client.redis_client.hset(f"dead_letter:{job.job_id}", "payload", job.to_json())
                 self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
                 if self.db_ready:
                     update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
@@ -140,7 +143,7 @@ class Worker:
 
 
     def _notify(self, batch_id: str, processed: int, total: int, done: bool = False):
-        """Send progress notification to API service."""
+        """Send progress notification to API service (fire-and-forget, never blocks the loop)."""
         api_host = os.getenv('API_HOST', 'api-service')
         api_port = os.getenv('API_PORT', '8000')
         use_mtls = os.getenv('USE_MTLS', '').lower() in ('true', '1')
@@ -148,16 +151,20 @@ class Worker:
         notify_url = f'{protocol}://{api_host}:{api_port}/portal/notify'
         mtls_verify = '/app/certs/ca.crt' if use_mtls else None
         mtls_cert = ('/app/certs/worker.crt', '/app/certs/worker.key') if use_mtls else None
-        try:
-            headers = {}
-            if WORKER_SECRET:
-                headers["X-Worker-Secret"] = WORKER_SECRET
-            payload = {'batch_id': batch_id, 'processed': processed, 'total': total}
-            if done:
-                payload['done'] = True
-            requests.post(notify_url, json=payload, headers=headers, timeout=2, verify=mtls_verify, cert=mtls_cert)
-        except Exception:
-            pass
+
+        def _post():
+            try:
+                headers = {}
+                if WORKER_SECRET:
+                    headers["X-Worker-Secret"] = WORKER_SECRET
+                payload = {'batch_id': batch_id, 'processed': processed, 'total': total}
+                if done:
+                    payload['done'] = True
+                requests.post(notify_url, json=payload, headers=headers, timeout=2, verify=mtls_verify, cert=mtls_cert)
+            except Exception:
+                pass
+
+        threading.Thread(target=_post, daemon=True).start()
 
     def process_ai_detection(self, job: Job, batch_id: str) -> bool:
         """Process AI detection for all submissions in a batch."""
@@ -180,8 +187,14 @@ class Worker:
                 raise RuntimeError('No submissions found for batch')
 
             total = len(submissions)
+            scored = 0
             for i, sub in enumerate(submissions):
                 sub_id = sub.get('submission_id', '')
+                # Skip already-scored submissions so retries don't redo work
+                if self.db_ready and sub.get('ai_score') is not None:
+                    scored += 1
+                    self._notify(batch_id, i + 1, total)
+                    continue
                 try:
                     text = self._extract_text(sub['file_path'])
                     if self.ai_detector.available and text.strip():
@@ -214,6 +227,7 @@ class Worker:
                 self.queue_client.enqueue_job(job)
             else:
                 self.queue_client.redis_client.sadd(DEAD_LETTER_KEY, job.job_id)
+                self.queue_client.redis_client.hset(f"dead_letter:{job.job_id}", "payload", job.to_json())
                 self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
                 if self.db_ready:
                     update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
@@ -223,6 +237,7 @@ class Worker:
     def process_similarity(self, job: Job, batch_id: str) -> bool:
         """Compute similarity matrix for all submissions in a batch."""
         try:
+            time.sleep(0.5)  # Ensure queue depth is visible to autoscaler
             print(f"[{WORKER_ID}] Starting similarity compute for {batch_id} (job {job.job_id})")
             job_start = time.time()
 
@@ -292,6 +307,7 @@ class Worker:
             else:
                 print(f"[{WORKER_ID}] Moving batch job {job.job_id} to dead letter (exhausted retries)")
                 self.queue_client.redis_client.sadd(DEAD_LETTER_KEY, job.job_id)
+                self.queue_client.redis_client.hset(f"dead_letter:{job.job_id}", "payload", job.to_json())
                 self.queue_client.update_job_status(job.job_id, JobStatus.FAILED)
                 if self.db_ready:
                     update_job_status(job.job_id, JobStatus.FAILED.value, worker_id=WORKER_ID, error=str(e))
@@ -377,6 +393,7 @@ class Worker:
                     if retries >= MAX_RETRIES:
                         print(f"[{WORKER_ID}] Moving {job.job_id} to dead letter (retried {retries}x)")
                         self.queue_client.redis_client.sadd(DEAD_LETTER_KEY, job.job_id)
+                        self.queue_client.redis_client.hset(f"dead_letter:{job.job_id}", "payload", job.to_json())
                         job.status = JobStatus.FAILED.value
                         job.error = f"Exceeded max retries ({MAX_RETRIES})"
                         job.completed_at = datetime.now(timezone.utc)
@@ -422,8 +439,13 @@ class Worker:
                     print(f"[{WORKER_ID}] Re-queuing dead letter job {job_id} (retry {retries + 1}/{MAX_RETRIES})")
                     self.queue_client.redis_client.srem(DEAD_LETTER_KEY, job_id)
                     self.queue_client.redis_client.hincrby(STALE_RETRY_KEY, job_id, 1)
-                    from shared.models import Job as JobModel
-                    recovery_job = JobModel(job_id=job_id, text="")
+                    stored_payload = self.queue_client.redis_client.hget(f"dead_letter:{job_id}", "payload")
+                    if stored_payload:
+                        from shared.models import Job as JobModel
+                        recovery_job = JobModel.from_json(stored_payload)
+                    else:
+                        from shared.models import Job as JobModel
+                        recovery_job = JobModel(job_id=job_id, text="")
                     self.queue_client.enqueue_job(recovery_job)
                 else:
                     print(f"[{WORKER_ID}] Dead letter job {job_id} exceeded max retries — skipping")
@@ -485,6 +507,7 @@ class Worker:
                 break
             except Exception as e:
                 print(f"[{WORKER_ID}] Error in worker loop: {e}")
+                traceback.print_exc()
                 time.sleep(1)
 
 

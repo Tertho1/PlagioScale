@@ -59,12 +59,14 @@ class QueueClient:
                     delay = min(delay * _RECONNECT_MULT, _RECONNECT_MAX)
 
     def enqueue_job(self, job: Job) -> bool:
-        """Push job to queue."""
+        """Push job to queue atomically."""
         try:
             self._ensure_connection()
-            self.redis_client.lpush('job_queue', job.to_json())
-            self.redis_client.hset(f'job:{job.job_id}', mapping={'status': job.status.value})
-            self.redis_client.expire(f'job:{job.job_id}', _REDIS_TTL)
+            pipe = self.redis_client.pipeline()
+            pipe.lpush('job_queue', job.to_json())
+            pipe.hset(f'job:{job.job_id}', mapping={'status': job.status.value})
+            pipe.expire(f'job:{job.job_id}', _REDIS_TTL)
+            pipe.execute()
             print(f"[Queue] Job {job.job_id} enqueued")
             return True
         except Exception as e:
@@ -194,9 +196,11 @@ class AsyncQueueClient:
     async def enqueue_job(self, job: Job) -> bool:
         try:
             await self._ensure_connection()
-            await self._redis.lpush('job_queue', job.to_json())
-            await self._redis.hset(f'job:{job.job_id}', mapping={'status': job.status.value})
-            await self._redis.expire(f'job:{job.job_id}', _REDIS_TTL)
+            pipe = self._redis.pipeline()
+            pipe.lpush('job_queue', job.to_json())
+            pipe.hset(f'job:{job.job_id}', mapping={'status': job.status.value})
+            pipe.expire(f'job:{job.job_id}', _REDIS_TTL)
+            await pipe.execute()
             print(f"[AsyncQueue] Job {job.job_id} enqueued")
             return True
         except Exception as e:

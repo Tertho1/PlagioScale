@@ -19,6 +19,10 @@ Monitoring (FastAPI, port 8090) → Prometheus → Grafana
 docker compose up -d --build
 ```
 
+> **Full setup guide with prerequisites, walkthrough, and troubleshooting:** [docs/setup_guide.md](docs/setup_guide.md)
+> 
+> For a comprehensive demo script showing every feature in order, see §5 — Demo Walkthrough in the setup guide.
+
 This starts all 7 services:
 
 | Service | Port | Purpose |
@@ -104,7 +108,7 @@ cd frontend
 npm install
 npm run dev      # port 5173, proxies /api → http://localhost:8000
 npm run build    # production build → frontend/dist
-npm run test     # Vitest (10 tests)
+npm run test     # Vitest (30 tests)
 ```
 
 ### Tests
@@ -216,12 +220,12 @@ grafana/              Pre-provisioned dashboards
 
 ## What's changed
 
-See `TODO.md` for per-task tracking and `AGENTS.md` for agent context.
+See `TODO.md` for per-task tracking and `AGENTS.md` for agent context (including branch strategy and work rules).
 
 Key recent additions:
 - **Round 13** — Session invalidation on role change, WS rate limiting, CSV stats export, admin users search/pagination, non-root containers, dark mode, live audit log tail, compose health monitor, Grafana audit dashboard, multi-replica WebSocket (Redis Pub/Sub), optional mTLS, 54 new unit tests (108 total)
 - **Phase 4** — Collusion graph, blind review mode, CSV enhanced columns
-- **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 10 frontend tests, seed data script, stress test with autoscaling verification
+- **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 30 frontend tests, seed data script, stress test with autoscaling verification
 - **Round 5** — Database init resilience (worker no longer stuck if migration fails), batch compute failure propagation (clear error messages for failed extractions), auth-aware frontend navigation (Login/Sign up hidden when logged in, nav shows email, auth page redirects)
 - JWT refresh mechanism, rate limiting, file upload validation
 - Matched similarity matrix with row/column order for collusion graph

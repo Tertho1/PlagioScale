@@ -32,9 +32,32 @@ except ImportError:
     logger.warning("fpdf2 not available — trying reportlab")
 
 
+def _escape_xml(text: str) -> str:
+    """Escape XML special characters so text is safe for Paragraph markup."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _plain(text: str) -> str:
+    """Strip markup and non-latin1 characters for the fpdf2 core-font path."""
+    cleaned = (
+        str(text)
+        .replace("<b>", "")
+        .replace("</b>", "")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+    )
+    return cleaned.encode("latin-1", "replace").decode("latin-1")
+
+
 def _highlight_diff_words(text_a: str, text_b: str) -> Tuple[List[str], List[str]]:
-    words_a = text_a.split()
-    words_b = text_b.split()
+    words_a = _escape_xml(text_a).split()
+    words_b = _escape_xml(text_b).split()
     set_b = set(words_b)
     set_a = set(words_a)
     highlighted_a = []
@@ -93,7 +116,7 @@ def _generate_reportlab(
     hl_style = ParagraphStyle("Highlighted", parent=styles["Normal"], textColor=colors.red)
 
     elements = []
-    elements.append(Paragraph(f"Plagiarism Report — {batch_name}", styles["Title"]))
+    elements.append(Paragraph(f"Plagiarism Report — {_escape_xml(batch_name)}", styles["Title"]))
     elements.append(Spacer(1, 12))
     elements.append(
         Paragraph(
@@ -105,8 +128,8 @@ def _generate_reportlab(
 
     info_data = [
         ["", "Submission A", "Submission B"],
-        ["Roll", sub_a.get("roll", "—"), sub_b.get("roll", "—")],
-        ["Name", sub_a.get("name", "—"), sub_b.get("name", "—")],
+        ["Roll", _escape_xml(sub_a.get("roll", "—")), _escape_xml(sub_b.get("roll", "—"))],
+        ["Name", _escape_xml(sub_a.get("name", "—")), _escape_xml(sub_b.get("name", "—"))],
     ]
     if ai_a is not None or ai_b is not None:
         info_data.append([
@@ -150,28 +173,30 @@ def _generate_fpdf2(
     ai_b: Optional[float],
     output_path: Optional[str],
 ) -> Optional[bytes]:
+    # fpdf2 core fonts cannot render HTML markup or non-latin1 characters,
+    # so highlight information is conveyed by position (plain text) only.
     pdf = fpdf.FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, f"Plagiarism Report - {batch_name}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 12, _plain(f"Plagiarism Report - {batch_name}"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 10, f"Similarity Score: {score:.1%}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, _plain(f"Similarity Score: {score:.1%}"), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(8)
     pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 8, f"Submission A: {sub_a.get('roll', '—')} - {sub_a.get('name', '—')}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 8, f"Submission B: {sub_b.get('roll', '—')} - {sub_b.get('name', '—')}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, _plain(f"Submission A: {sub_a.get('roll', '-')} - {sub_a.get('name', '-')}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, _plain(f"Submission B: {sub_b.get('roll', '-')} - {sub_b.get('name', '-')}"), new_x="LMARGIN", new_y="NEXT")
     if ai_a is not None:
-        pdf.cell(0, 8, f"AI Score A: {ai_a:.1%}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 8, _plain(f"AI Score A: {ai_a:.1%}"), new_x="LMARGIN", new_y="NEXT")
     if ai_b is not None:
-        pdf.cell(0, 8, f"AI Score B: {ai_b:.1%}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 8, _plain(f"AI Score B: {ai_b:.1%}"), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "Text Comparison", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
-    words_a_hl, _ = _highlight_diff_words(text_a, text_b)
-    pdf.multi_cell(0, 5, " ".join(words_a_hl))
+    words_a_hl, words_b_hl = _highlight_diff_words(text_a, text_b)
+    pdf.multi_cell(0, 5, _plain(" ".join(words_a_hl)))
     pdf.ln(6)
-    pdf.multi_cell(0, 5, " ".join(words_a_hl))
+    pdf.multi_cell(0, 5, _plain(" ".join(words_b_hl)))
 
     if output_path:
         pdf.output(output_path)

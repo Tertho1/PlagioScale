@@ -2,7 +2,7 @@
 import os
 from unittest.mock import patch
 
-from shared.email_notifier import notify_assignment_open, notify_completion, send_email
+from shared.email_notifier import notify_assignment_open, notify_completion, send_bulk_emails, send_email
 
 
 def test_send_email_no_smtp_config():
@@ -16,16 +16,29 @@ def test_send_email_success():
     os.environ["SMTP_USER"] = "user"
     os.environ["SMTP_PASSWORD"] = "pass"
     with patch("shared.email_notifier.smtplib.SMTP") as mock_smtp:
-        instance = mock_smtp.return_value.__enter__.return_value
+        instance = mock_smtp.return_value
         result = send_email("to@example.com", "Test", "Hello")
     assert result is True
     instance.sendmail.assert_called_once()
+    instance.quit.assert_called_once()
+
+
+def test_send_bulk_emails():
+    os.environ["SMTP_HOST"] = "smtp.example.com"
+    with patch("shared.email_notifier.smtplib.SMTP") as mock_smtp:
+        instance = mock_smtp.return_value
+        sent = send_bulk_emails([
+            ("a@example.com", "Subj A", "Body A"),
+            ("b@example.com", "Subj B", "Body B"),
+        ])
+    assert sent == 2
+    assert instance.sendmail.call_count == 2
 
 
 def test_send_email_with_html():
     os.environ["SMTP_HOST"] = "smtp.example.com"
     with patch("shared.email_notifier.smtplib.SMTP") as mock_smtp:
-        instance = mock_smtp.return_value.__enter__.return_value
+        instance = mock_smtp.return_value
         result = send_email("to@example.com", "Test", "Hello", "<p>Hello</p>")
     assert result is True
     instance.sendmail.assert_called_once()
@@ -35,7 +48,7 @@ def test_send_email_no_tls(monkeypatch):
     monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("SMTP_USE_TLS", "false")
     with patch("shared.email_notifier.smtplib.SMTP") as mock_smtp:
-        instance = mock_smtp.return_value.__enter__.return_value
+        instance = mock_smtp.return_value
         result = send_email("to@example.com", "Test", "Hello")
     assert result is True
     instance.starttls.assert_not_called()

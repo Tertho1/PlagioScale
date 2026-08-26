@@ -1,15 +1,17 @@
 import PropTypes from "prop-types";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { clearToken, getAuthHeaders, getStoredEmail, getToken, isTokenExpired } from "../utils/auth";
-import { useBatchProgress } from "../utils/websocket";
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { API_BASE } from "../utils/config";
+import { getAuthHeaders, getStoredEmail } from "../utils/auth";
+import { showToast } from "../components/Toast";
+import useAssignments from "../hooks/useAssignments";
+import useAssignmentDetails from "../hooks/useAssignmentDetails";
+import useSimilarityCompute from "../hooks/useSimilarityCompute";
+import useMatrixViewer from "../hooks/useMatrixViewer";
 import BlindReviewToggle from "../components/BlindReviewToggle";
-import CollusionGraph from "../components/CollusionGraph";
 import SimilarityMatrix from "../components/SimilarityMatrix";
 import MatrixViewer from "../components/MatrixViewer";
 import "../styles/portal.css";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 function formatDate(value) {
   if (!value) return "Recently";
@@ -36,7 +38,7 @@ function AssignmentCard({ item, active, onClick }) {
           <div className="assignment-title">{item.name}</div>
           <div className="assignment-subtitle">{item.batch_id}</div>
         </div>
-        <span className="assignment-pill">{item.expected_count || 0} expected</span>
+        <span className="assignment-pill">{item.owner_user_id ? "Owned" : "Shared"}</span>
       </div>
       <div className="assignment-meta">
         <span>{formatDate(item.created_at)}</span>
@@ -59,349 +61,189 @@ AssignmentCard.propTypes = {
   active: PropTypes.bool,
   onClick: PropTypes.func.isRequired,
 };
+const MemoizedAssignmentCard = memo(AssignmentCard);
+
+function buildHistogram(values, buckets = 5) {
+  const counts = new Array(buckets).fill(0);
+  values.forEach(v => {
+    const idx = Math.min(Math.floor(v * buckets), buckets - 1);
+    counts[idx]++;
+  });
+  return counts;
+}
+
+const BatchAnalytics = memo(function BatchAnalytics({ submissions }) {
+  const scoreHist = useMemo(
+    () => buildHistogram(submissions.map(s => s.plagiarism_score).filter(s => s != null)),
+    [submissions]
+  );
+  const aiHist = useMemo(
+    () => buildHistogram(submissions.map(s => s.ai_score).filter(s => s != null)),
+    [submissions]
+  );
+  const scores = useMemo(() => submissions.map(s => s.plagiarism_score).filter(s => s != null), [submissions]);
+  const aiScores = useMemo(() => submissions.map(s => s.ai_score).filter(s => s != null), [submissions]);
+  const maxCount = Math.max(1, ...scoreHist, ...aiHist);
+
+  const avgScore = scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length * 100).toFixed(1) : '—';
+  const avgAi = aiScores.length ? (aiScores.reduce((a, b) => a + b, 0) / aiScores.length * 100).toFixed(1) : '—';
+  const maxScore = scores.length ? (Math.max(...scores) * 100).toFixed(1) : '—';
+
+  const bands = ['0–20%', '20–40%', '40–60%', '60–80%', '80–100%'];
+
+  return (
+    <div className="batch-analytics">
+      <div className="section-label">Analytics</div>
+      <h3 className="section-title" style={{ fontSize: 15, margin: '4px 0 14px' }}>Batch overview</h3>
+      <div className="analytics-stats">
+        <div className="analytics-stat">
+          <span>{submissions.length}</span>
+          <small>Submissions</small>
+        </div>
+        <div className="analytics-stat">
+          <span>{avgScore}%</span>
+          <small>Avg similarity</small>
+        </div>
+        <div className="analytics-stat">
+          <span>{maxScore}%</span>
+          <small>Max similarity</small>
+        </div>
+        <div className="analytics-stat">
+          <span>{avgAi}%</span>
+          <small>Avg AI score</small>
+        </div>
+      </div>
+      {scores.length > 0 && (
+        <div className="analytics-chart">
+          <div className="analytics-chart-title">Similarity distribution</div>
+          <div className="analytics-bars">
+            {scoreHist.map((count, i) => (
+              <div key={i} className="analytics-bar-col">
+                <div className="analytics-bar-wrapper">
+                  <div className={`analytics-bar analytics-band-${i + 1}`} style={{ height: `${(count / maxCount) * 100}%` }} />
+                </div>
+                <div className="analytics-bar-label">{bands[i]}</div>
+                <div className="analytics-bar-count">{count}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {aiScores.length > 0 && (
+        <div className="analytics-chart">
+          <div className="analytics-chart-title">AI detection distribution</div>
+          <div className="analytics-bars">
+            {aiHist.map((count, i) => (
+              <div key={i} className="analytics-bar-col">
+                <div className="analytics-bar-wrapper">
+                  <div className={`analytics-bar analytics-band-${i + 1}`} style={{ height: `${(count / maxCount) * 100}%` }} />
+                </div>
+                <div className="analytics-bar-label">{bands[i]}</div>
+                <div className="analytics-bar-count">{count}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+BatchAnalytics.propTypes = {
+  submissions: PropTypes.array.isRequired,
+};
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const token = getToken();
   const email = getStoredEmail();
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [assignmentName, setAssignmentName] = useState("");
-  const [expectedCount, setExpectedCount] = useState(30);
-  const [ownedAssignments, setOwnedAssignments] = useState([]);
-  const [sharedAssignments, setSharedAssignments] = useState([]);
-  const [selectedId, setSelectedId] = useState(searchParams.get("batch") || "");
-  const [selected, setSelected] = useState(null);
-  const [matrix, setMatrix] = useState(null);
-  const [matrixIds, setMatrixIds] = useState([]);
-  const [labels, setLabels] = useState([]);
-  const [submissions, setSubmissions] = useState([]);
-  const [creating, setCreating] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [computing, setComputing] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState("");
-  const [deleting, setDeleting] = useState(false);
-  const [viewer, setViewer] = useState({ open: false, left: null, right: null, similarity: 0 });
-  const [blindReview, setBlindReview] = useState(false);
+  const assignments = useAssignments();
+  const {
+    token, loading, error, setError,
+    ownedAssignments, sharedAssignments,
+    selectedId, setSelectedId, setSelected,
+    creating, assignmentName, setAssignmentName,
+    expectedCount, setExpectedCount,
+    renaming, setRenaming,
+    saving, renameValue, setRenameValue,
+    confirmDelete, setConfirmDelete,
+    deleting, stats,
+    createAssignment, handleRename, handleDelete,
+  } = assignments;
 
-  const wsProgress = useBatchProgress(selectedId);
+  const details = useAssignmentDetails(token, selectedId, setError, navigate);
+  const {
+    selected, submissions, matrix, matrixIds,
+    refreshing, blindReview, setBlindReview,
+    threshold, setThreshold,
+    displayLabels, submissionCount,
+    loadAssignmentDetails,
+  } = details;
 
-  const displayLabels = useMemo(() => {
-    if (!blindReview || !labels.length) return labels;
-    return labels.map((_, idx) => `Submission ${idx + 1}`);
-  }, [blindReview, labels]);
+  const { computing, wsProgress, computeSimilarity } = useSimilarityCompute(
+    token, selectedId, loadAssignmentDetails, setError
+  );
 
-  const stats = useMemo(() => {
-    const total = ownedAssignments.length + sharedAssignments.length;
-    return {
-      total,
-      owned: ownedAssignments.length,
-      shared: sharedAssignments.length,
-      submissions: submissions.length,
-    };
-  }, [ownedAssignments, sharedAssignments, submissions]);
+  const { viewer, viewerLoading, handleCellClick, closeViewer } = useMatrixViewer(
+    selectedId, matrixIds, displayLabels, submissions
+  );
 
-  useEffect(() => {
-    if (wsProgress.processed > 0 && selected) {
-      loadAssignmentDetails(selectedId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsProgress.processed, wsProgress.total, wsProgress.done]);
+  const detailStats = useMemo(() => ({
+    ...stats,
+    submissions: submissionCount,
+  }), [stats, submissionCount]);
 
-  async function loadAssignments() {
-    if (!token) return;
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(`${API_BASE}/portal/assignments`, {
-        headers: await getAuthHeaders(),
-        credentials: "include",
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to load assignments");
-      const owned = (data.owned || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      const shared = (data.shared || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      setOwnedAssignments(owned);
-      setSharedAssignments(shared);
-      setSelectedId((id) => id || (owned[0]?.batch_id || shared[0]?.batch_id || ""));
-    } catch (error) {
-      setError(error.message);
-      if (error.message?.includes("authorization") || error.message?.includes("token")) {
-        clearToken();
-        navigate("/auth");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [assignmentSearch, setAssignmentSearch] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState(false);
+  const [deadlineEditValue, setDeadlineEditValue] = useState("");
+  const [savingDeadline, setSavingDeadline] = useState(false);
+  useEffect(() => { setEditingDeadline(false); }, [selectedId]);
 
-  async function loadAssignmentDetails(batchId) {
-    if (!batchId || !token) return;
-    setRefreshing(true);
-    setError("");
-    try {
-      const response = await fetch(`${API_BASE}/portal/assignments/${batchId}`, {
-        headers: await getAuthHeaders(),
-        credentials: "include",
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to load assignment");
-
-      setSelected(data.assignment);
-      setSubmissions(data.submissions || []);
-
-      const mres = await fetch(`${API_BASE}/portal/similarity-matrix/${batchId}`, { headers: await getAuthHeaders(), credentials: "include" });
-      if (mres.ok) {
-        const mjson = await mres.json();
-        const matrixObj = mjson.matrix || {};
-        const ids = Object.keys(matrixObj);
-        setMatrixIds(ids);
-        setMatrix(ids.length ? ids.map((i) => ids.map((j) => matrixObj[i][j] || 0)) : null);
-
-        const sfetch = await fetch(`${API_BASE}/portal/submissions/${batchId}?limit=500&offset=0`, { headers: await getAuthHeaders(), credentials: "include" });
-        let labelsMap = {};
-        if (sfetch.ok) {
-          const sjson = await sfetch.json();
-          (sjson.submissions || []).forEach((submission) => {
-            labelsMap[submission.submission_id] = submission.roll || submission.submission_id;
-          });
-        }
-        setLabels(ids.map((id) => labelsMap[id] || id));
-      } else {
-        setMatrix(null);
-        setLabels([]);
-      }
-    } catch (error) {
-      setError(error.message);
-      if (error.message?.includes("authorization") || error.message?.includes("token") || error.message?.includes("401")) {
-        clearToken();
-        navigate("/auth");
-      }
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  async function createAssignment(event) {
-    event.preventDefault();
-    if (!token) return navigate("/auth");
-
-    setCreating(true);
-    setError("");
-    try {
-      const headers = {
-        "Content-Type": "application/json",
-        ...(await getAuthHeaders()),
-      };
-      const response = await fetch(`${API_BASE}/portal/assignments`, {
-        method: "POST",
-        headers,
-        credentials: "include",
-        body: JSON.stringify({ name: assignmentName, expected_count: Number(expectedCount) || 0 }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to create assignment");
-      setAssignmentName("");
-      await loadAssignments();
-      setSelectedId(data.batch_id);
-      await loadAssignmentDetails(data.batch_id);
-    } catch (error) {
-      setError(error.message);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function computeSimilarity() {
-    if (!selectedId) return;
-    console.log("[Compute] Starting compute for batch:", selectedId);
-    setError("");
-    setComputing(true);
-    try {
-      console.log("[Compute] POST /portal/compute-similarity/");
-      const response = await fetch(`${API_BASE}/portal/compute-similarity/${selectedId}`, { method: "POST", headers: await getAuthHeaders(), credentials: "include" });
-      console.log("[Compute] Response status:", response.status);
-      const data = await response.json().catch(() => ({}));
-      console.log("[Compute] Response body:", data);
-      if (!response.ok) {
-        setError(data.detail || "Failed to queue compute");
-        setComputing(false);
-        return;
-      }
-      const jobId = data.job_id;
-      console.log("[Compute] Job queued, jobId:", jobId);
-      let status = null;
-      let jobError = null;
-      for (let i = 0; i < 300; i++) {
-        try {
-          const sres = await fetch(`${API_BASE}/status/${jobId}`, { credentials: "include" });
-          if (sres.ok) {
-            const sjson = await sres.json();
-            console.log(`[Compute] Poll ${i + 1}: status=`, sjson.status, "error=", sjson.error);
-            status = sjson.status;
-            jobError = sjson.error || null;
-            if (status === "COMPLETED" || status === "FAILED") {
-              console.log("[Compute] Terminal status reached:", status);
-              break;
-            }
-          } else {
-            console.log(`[Compute] Poll ${i + 1}: status endpoint returned ${sres.status}`);
-          }
-        } catch (e) { console.log(`[Compute] Poll ${i + 1}: fetch error:`, e); }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-      console.log("[Compute] Poll loop ended. Final status:", status, "jobError:", jobError);
-      if (status !== "COMPLETED") {
-        setError(jobError || "Compute failed or timed out");
-        setComputing(false);
-        return;
-      }
-      console.log("[Compute] Job completed, refreshing assignment details");
-      await loadAssignmentDetails(selectedId);
-      console.log("[Compute] Assignment details refreshed successfully");
-    } catch (e) {
-      console.log("[Compute] Unhandled error:", e);
-      setError(e?.message || "Compute failed");
-    } finally {
-      setComputing(false);
-    }
-  }
-
-  async function handleRename() {
-    if (!selectedId || !renameValue.trim()) return;
-    setSaving(true);
-    setError("");
+  const saveDeadline = useCallback(async () => {
+    if (!selectedId || !selected) return;
+    setSavingDeadline(true);
     try {
       const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
         credentials: "include",
-        body: JSON.stringify({ name: renameValue.trim() }),
+        body: JSON.stringify({ name: selected.name, due_date: deadlineEditValue || null }),
       });
-      if (res.status === 401) { clearToken(); navigate("/auth"); return; }
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
-        throw new Error(d.detail || "Failed to rename");
+        throw new Error(d.detail || "Failed to save deadline");
       }
-      const newName = renameValue.trim();
-      setSaving(false);
-      setRenaming(false);
-      setSelected((s) => (s ? { ...s, name: newName } : s));
-      setOwnedAssignments((prev) => prev.map((a) => a.batch_id === selectedId ? { ...a, name: newName } : a));
-      setSharedAssignments((prev) => prev.map((a) => a.batch_id === selectedId ? { ...a, name: newName } : a));
-      setRenameValue("");
+      setSelected((s) => s ? { ...s, due_date: deadlineEditValue ? new Date(deadlineEditValue).toISOString() : null } : s);
+      setEditingDeadline(false);
+      showToast("Deadline updated", "success");
     } catch (e) {
-      setError(e.message);
-      setSaving(false);
+      showToast(e.message || "Failed to save", "error");
+    } finally {
+      setSavingDeadline(false);
     }
-  }
+  }, [selectedId, selected, deadlineEditValue, setSelected]);
 
-  async function handleDelete() {
-    if (!selectedId || confirmDelete !== selected?.name) return;
-    setDeleting(true);
-    setError("");
-    try {
-      const res = await fetch(`${API_BASE}/portal/assignments/${selectedId}`, {
-        method: "DELETE",
-        headers: await getAuthHeaders(),
-        credentials: "include",
-      });
-      if (res.status === 401) { clearToken(); navigate("/auth"); return; }
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.detail || "Failed to delete");
-      }
-      setConfirmDelete("");
-      setDeleting(false);
-      setSelectedId("");
-      setSelected(null);
-      setSubmissions([]);
-      setMatrix(null);
-      setMatrixIds([]);
-      setLabels([]);
-      await loadAssignments();
-    } catch (e) {
-      setError(e.message);
-      setDeleting(false);
-    }
-  }
-
-  const handleCellClick = useCallback(async (rowIdx, colIdx, cellValue) => {
-    const leftId = matrixIds?.[rowIdx];
-    const rightId = matrixIds?.[colIdx];
-    if (!leftId || !rightId) return;
-    const leftLabel = displayLabels[rowIdx];
-    const rightLabel = displayLabels[colIdx];
-
-    const leftSub = submissions.find(s => s.submission_id === leftId);
-    const rightSub = submissions.find(s => s.submission_id === rightId);
-
-    async function fetchText(subId) {
-      try {
-        const res = await fetch(
-          `${API_BASE}/portal/submissions/${selectedId}/${subId}/text`,
-          { headers: await getAuthHeaders(), credentials: "include" }
-        );
-        if (res.ok) {
-          const data = await res.json();
-          return { text: data.text || "", roll: data.roll || "" };
-        }
-      } catch (e) { /* ignore fetch error */ }
-      return { text: "", roll: "" };
-    }
-
-    const leftResult = leftId ? await fetchText(leftId) : { text: "", roll: "" };
-    const rightResult = rightId ? await fetchText(rightId) : { text: "", roll: "" };
-
-    setViewer({
-      open: true,
-      left: {
-        id: leftId,
-        label: leftLabel,
-        text: leftResult.text,
-        roll: leftSub?.roll || leftResult.roll,
-        name: leftSub?.name || "",
-        filename: leftSub?.filename || "",
-      },
-      right: {
-        id: rightId,
-        label: rightLabel,
-        text: rightResult.text,
-        roll: rightSub?.roll || rightResult.roll,
-        name: rightSub?.name || "",
-        filename: rightSub?.filename || "",
-      },
-      similarity: cellValue,
-    });
-  }, [matrixIds, displayLabels, selectedId, submissions]);
-
-  useEffect(() => {
-    if (!token) {
-      navigate("/auth");
-      return;
-    }
-    // Redirect immediately if the token is expired client-side
-    // (avoids a pointless API call that will 401)
-    if (isTokenExpired(token)) {
-      clearToken();
-      navigate("/auth");
-      return;
-    }
-    loadAssignments();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    setSearchParams(selectedId ? { batch: selectedId } : {}, { replace: true });
-    loadAssignmentDetails(selectedId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+  const searchLower = assignmentSearch.trim().toLowerCase();
+  const filterBySearch = useCallback(
+    (items) =>
+      !searchLower
+        ? items
+        : items.filter(
+            (item) =>
+              (item.name || "").toLowerCase().includes(searchLower) ||
+              (item.batch_id || "").toLowerCase().includes(searchLower)
+          ),
+    [searchLower]
+  );
+  const filteredOwned = useMemo(
+    () => filterBySearch(ownedAssignments),
+    [filterBySearch, ownedAssignments]
+  );
+  const filteredShared = useMemo(
+    () => filterBySearch(sharedAssignments),
+    [filterBySearch, sharedAssignments]
+  );
 
   if (!token) return null;
 
@@ -423,10 +265,7 @@ export default function Dashboard() {
             >
               {!selectedId && <option value="">Select an assignment...</option>}
               {ownedAssignments.map((a) => (
-                <option key={a.batch_id} value={a.batch_id}>{a.name} (owned)</option>
-              ))}
-              {sharedAssignments.map((a) => (
-                <option key={a.batch_id} value={a.batch_id}>{a.name} (shared)</option>
+                <option key={a.batch_id} value={a.batch_id}>{a.name}</option>
               ))}
             </select>
             <div className="toolbar-actions">
@@ -440,18 +279,14 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-        <div className="dashboard-hero-stats">
+          <div className="dashboard-hero-stats">
           <div className="dashboard-stat">
-            <span>{stats.total}</span>
+            <span>{detailStats.total}</span>
             <small>Assignments</small>
           </div>
           <div className="dashboard-stat">
-            <span>{stats.owned}</span>
-            <small>Owned</small>
-          </div>
-          <div className="dashboard-stat">
-            <span>{stats.submissions}</span>
-            <small>Submissions in view</small>
+            <span>{detailStats.submissions}</span>
+            <small>Submissions</small>
           </div>
         </div>
       </section>
@@ -469,23 +304,30 @@ export default function Dashboard() {
         </div>
       )}
 
+      {wsProgress.failed && (
+        <div className="status-box error" style={{ margin: "0 auto", maxWidth: 960, fontSize: 13 }}>
+          Live updates unavailable — refresh the page manually to check progress.
+        </div>
+      )}
+
       <section className="dashboard-grid">
         <aside className="dashboard-panel dashboard-panel-list">
           <div className="section-label">Your work</div>
           <h2 className="section-title">Assignments</h2>
 
-          <form onSubmit={createAssignment} className="mini-create-form">
+          <form onSubmit={(e) => createAssignment(e, { due_date: dueDate || undefined }).then(() => { if (dueDate) setDueDate(""); })} className="mini-create-form">
             <input
               value={assignmentName}
               onChange={(e) => setAssignmentName(e.target.value)}
               placeholder="New assignment name"
+              style={{ height: 38 }}
             />
             <input
-              type="number"
-              min="0"
-              value={expectedCount}
-              onChange={(e) => setExpectedCount(e.target.value)}
-              placeholder="Expected submissions"
+              type="datetime-local"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              title="Deadline (optional)"
+              style={{ height: 38 }}
             />
             <button className="button" type="submit" disabled={creating}>
               {creating ? "Creating..." : "Create assignment"}
@@ -493,28 +335,32 @@ export default function Dashboard() {
           </form>
 
           <div className="assignment-list-block">
+            <input
+              type="search"
+              className="assignment-search"
+              placeholder="Search assignments..."
+              aria-label="Search assignments"
+              value={assignmentSearch}
+              onChange={(e) => setAssignmentSearch(e.target.value)}
+            />
             <div className="list-heading">Owned</div>
             <div className="assignment-list">
               {loading
                 ? Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)
-                : ownedAssignments.map((item) => (
-                <AssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
+                : filteredOwned.map((item) => (
+                <MemoizedAssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
               ))}
-              {!loading && ownedAssignments.length === 0 && <div className="empty-state">No owned assignments yet.</div>}
+              {!loading && filteredOwned.length === 0 && (
+                <div className="empty-state">
+                  <div className="empty-state-icon">+</div>
+                  <div className="empty-state-title">{searchLower ? "No matches" : "No assignments yet"}</div>
+                  <div className="empty-state-hint">{searchLower ? "Try a different search term." : "Create your first assignment above to start collecting submissions."}</div>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="assignment-list-block">
-            <div className="list-heading">Shared</div>
-            <div className="assignment-list">
-              {loading
-                ? Array.from({ length: 2 }).map((_, i) => <div key={i} className="skeleton skeleton-card" />)
-                : sharedAssignments.map((item) => (
-                <AssignmentCard key={item.batch_id} item={item} active={selectedId === item.batch_id} onClick={() => setSelectedId(item.batch_id)} />
-              ))}
-              {!loading && sharedAssignments.length === 0 && <div className="empty-state">No shared assignments.</div>}
-            </div>
-          </div>
+          {/* Shared assignments hidden per request */}
         </aside>
 
         <main className="dashboard-panel dashboard-panel-detail">
@@ -549,12 +395,38 @@ export default function Dashboard() {
               <button className="button" type="button" onClick={computeSimilarity} disabled={!selectedId || computing}>
                 {computing ? "Computing..." : "Compute similarity"}
               </button>
+              <button
+                className="button-secondary"
+                type="button"
+                disabled={!selectedId || !submissions.length}
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`${API_BASE}/portal/export/${selectedId}`, {
+                      headers: await getAuthHeaders(),
+                      credentials: "include",
+                    });
+                    if (!res.ok) throw new Error("Export failed");
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `results_${selected?.name || selectedId}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch (e) {
+                    showToast("Failed to export CSV", "error");
+                  }
+                }}
+                aria-label="Export batch results as CSV"
+              >
+                Export CSV
+              </button>
               {selected && (
                 <>
                   <button className="button-secondary" type="button" onClick={() => { setRenameValue(selected.name); setRenaming(true); }}>
                     Rename
                   </button>
-                  <button className="button-secondary" type="button" onClick={() => setConfirmDelete(selected.name)} style={{ color: "#dc2626" }}>
+                  <button className="button-secondary" type="button" onClick={() => setConfirmDelete(selected.name)} style={{ color: "var(--danger)" }}>
                     Delete
                   </button>
                 </>
@@ -566,7 +438,7 @@ export default function Dashboard() {
             <div className="modal-overlay" onClick={() => setConfirmDelete("")} role="dialog" aria-modal="true">
               <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
                 <h3 style={{ margin: "0 0 8px" }}>Delete assignment?</h3>
-                <p style={{ margin: "0 0 16px", color: "#64748b" }}>
+                <p style={{ margin: "0 0 16px", color: "var(--text-soft)" }}>
                   This will permanently delete &ldquo;<strong>{selected.name}</strong>&rdquo; and all its submissions and similarity data. Type the assignment name to confirm.
                 </p>
                 <input
@@ -578,7 +450,7 @@ export default function Dashboard() {
                 />
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button className="button-secondary" onClick={() => setConfirmDelete("")}>Cancel</button>
-                  <button className="button" onClick={handleDelete} disabled={confirmDelete !== selected.name || deleting} style={{ background: "#dc2626", color: "#fff" }}>
+                  <button className="button" onClick={handleDelete} disabled={confirmDelete !== selected.name || deleting} style={{ background: "var(--danger)", color: "#fff" }}>
                     {deleting ? "Deleting..." : "Delete"}
                   </button>
                 </div>
@@ -588,61 +460,235 @@ export default function Dashboard() {
 
           {selected ? (
             <>
+              {refreshing && (
+                <div className="status-box" style={{ margin: "0 0 12px", padding: "6px 12px", fontSize: 13, color: "var(--text-soft)" }}>
+                  Refreshing data...
+                </div>
+              )}
               <div className="detail-cards">
                 <div className="detail-card">
                   <span className="detail-label">Access code</span>
-                  <strong className="mono">{selected.access_code}</strong>
-                </div>
-                <div className="detail-card">
-                  <span className="detail-label">Expected</span>
-                  <strong>{selected.expected_count || 0}</strong>
+                  {selected.access_code ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong className="mono">{selected.access_code}</strong>
+                      <button
+                        type="button"
+                        className="button-ghost"
+                        style={{ fontSize: 11, padding: "2px 8px" }}
+                        aria-label={`Copy access code ${selected.access_code}`}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(selected.access_code);
+                            showToast("Access code copied to clipboard", "success");
+                          } catch {
+                            showToast("Could not copy — select it manually", "error");
+                          }
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  ) : (
+                    <strong title="Only the assignment owner can see the access code">—</strong>
+                  )}
                 </div>
                 <div className="detail-card">
                   <span className="detail-label">Submitted</span>
                   <strong>{submissions.length}</strong>
                 </div>
+                {selected.due_date && (
+                  <div className="detail-card">
+                    <span className="detail-label">Due date</span>
+                    <strong>
+                      {new Date(selected.due_date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {new Date(selected.due_date) < new Date() && (
+                        <span style={{ marginLeft: 6, fontSize: 11, padding: "2px 6px", borderRadius: 6, background: "var(--danger)", color: "#fff", fontWeight: 600 }}>Overdue</span>
+                      )}
+                    </strong>
+                  </div>
+                )}
+                <div className="detail-card">
+                  <span className="detail-label">Resubmission</span>
+                  <strong>{selected.allow_resubmission !== false ? 'Allowed' : 'Disabled'}</strong>
+                </div>
+                {selected.max_submissions > 0 && (
+                  <div className="detail-card">
+                    <span className="detail-label">Max submissions</span>
+                    <strong>{selected.max_submissions}</strong>
+                  </div>
+                )}
               </div>
 
-              <div className="submissions-table">
-                {submissions.length > 0 ? submissions.map((submission, idx) => {
+              {selected.owner_user_id && (
+                <div style={{ margin: "0 0 12px", display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <span style={{ color: "var(--text-soft)" }}>Deadline:</span>
+                  {editingDeadline ? (
+                    <>
+                      <input
+                        type="datetime-local"
+                        value={deadlineEditValue}
+                        onChange={(e) => setDeadlineEditValue(e.target.value)}
+                        style={{ fontSize: 13, padding: "3px 6px", borderRadius: 6, border: "1px solid rgba(148,163,184,0.25)" }}
+                      />
+                      <button className="button-secondary button-sm" onClick={saveDeadline} disabled={savingDeadline} style={{ fontSize: 11, padding: "3px 8px" }}>
+                        {savingDeadline ? "Saving..." : "Save"}
+                      </button>
+                      <button className="button-secondary button-sm" onClick={() => setEditingDeadline(false)} style={{ fontSize: 11, padding: "3px 8px" }}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="button-secondary button-sm" onClick={() => { setDeadlineEditValue(selected.due_date ? new Date(selected.due_date).toISOString().slice(0, 16) : ""); setEditingDeadline(true); }} style={{ fontSize: 11, padding: "3px 8px" }}>
+                      {selected.due_date ? "Edit deadline" : "Set deadline"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="submissions-table" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                {refreshing ? (
+                  Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="skeleton-row">
+                      <div className="skeleton-row-left">
+                        <div className="skeleton skeleton-text" style={{ width: "30%" }} />
+                        <div className="skeleton skeleton-text" style={{ width: "50%" }} />
+                        <div className="skeleton skeleton-text" style={{ width: "40%" }} />
+                      </div>
+                      <div className="skeleton-row-right">
+                        <div className="skeleton skeleton-text" style={{ width: 50, height: 16 }} />
+                        <div className="skeleton skeleton-text" style={{ width: 40, height: 16 }} />
+                      </div>
+                    </div>
+                  ))
+                ) : submissions.length > 0 ? submissions
+                    .map((submission, idx) => {
+                  const globalIdx = idx;
+                  // Find top matches from similarity matrix for this submission
+                  let matchInfo = '';
+                  if (matrix && matrixIds && !blindReview) {
+                    const rollMap = {};
+                    submissions.forEach(s => { rollMap[s.submission_id] = s.roll || s.submission_id; });
+                    const matrixIdx = matrixIds.indexOf(submission.submission_id);
+                    if (matrixIdx >= 0) {
+                      const row = matrix[matrixIdx] || [];
+                      const matches = row
+                        .map((score, j) => ({ score, j }))
+                        .filter(m => m.j !== matrixIdx && m.score > 0.2)
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, 3);
+                      if (matches.length) {
+                        matchInfo = ' with ' + matches.map(m => `${rollMap[matrixIds[m.j]] || '?'} ${(m.score * 100).toFixed(0)}%`).join(', ');
+                      }
+                    }
+                  }
                   const aiScore = submission.ai_score != null ? submission.ai_score : null;
                   let aiBadge = null;
                   if (aiScore != null && aiScore >= 0) {
                     const pct = (aiScore * 100).toFixed(0);
-                    const cls = aiScore > 0.7 ? 'ai-badge-red' : aiScore > 0.3 ? 'ai-badge-yellow' : 'ai-badge-green';
-                    aiBadge = <span className={`ai-badge ${cls}`} title={`AI detection confidence: ${pct}%`}>AI {pct}%</span>;
+                    let cls, caveat;
+                    if (aiScore > 0.7) {
+                      cls = 'ai-badge-red';
+                      caveat = 'Likely AI-generated';
+                    } else if (aiScore > 0.3) {
+                      cls = 'ai-badge-yellow';
+                      caveat = 'Possibly AI-assisted';
+                    } else {
+                      cls = 'ai-badge-green';
+                      caveat = 'Likely human-written';
+                    }
+                    aiBadge = (
+                      <span className={`ai-badge ${cls}`} title={caveat} aria-label={`AI score ${pct}% — ${caveat}`}>
+                        AI Detection — {pct}%
+                      </span>
+                    );
                   }
-                    const fileName = submission.filename ? submission.filename.split("_").slice(3).join("_") : "—";
-                    return (
+                  const score = submission.plagiarism_score;
+                  let scoreBadge = null;
+                  if (score != null) {
+                    const pct = (score * 100).toFixed(1);
+                    let cls, sevLabel = '';
+                    if (score > 0.8) { cls = 'score-badge-red'; sevLabel = 'Very high'; }
+                    else if (score > 0.6) { cls = 'score-badge-orange'; sevLabel = 'High'; }
+                    else if (score > 0.4) { cls = 'score-badge-yellow'; }
+                    else if (score > 0.2) { cls = 'score-badge-green'; }
+                    else { cls = 'score-badge-blue'; }
+                    const ariaLabel = sevLabel
+                      ? `Similarity ${sevLabel.toLowerCase()}: ${pct}%`
+                      : `Similarity: ${pct}%`;
+                    // Severity word shown for high bands — text cue independent of color
+                    scoreBadge = (
+                      <span className={`score-badge ${cls}`} title={ariaLabel} aria-label={ariaLabel}>
+                        Similarity — {sevLabel ? <><span className="badge-sev">{sevLabel}</span> · </> : null}{pct}%{matchInfo ? <span className="match-info">{matchInfo}</span> : null}
+                      </span>
+                    );
+                  }
+                    const fileName = submission.original_filename || (submission.filename ? submission.filename.split("_").slice(3).join("_") : "—");
+                  return (
                       <div key={submission.submission_id} className="submission-row">
                         <div>
-                          <strong>{blindReview ? `Submission ${idx + 1}` : submission.roll}</strong>
+                          <strong>{blindReview ? `Submission ${globalIdx + 1}` : `ID ${submission.roll}`}</strong>
                           <div className="small-copy">{blindReview ? "—" : (submission.name || "Name not provided")}</div>
                           <div className="small-copy">{blindReview ? "—" : (submission.email || "Email not provided")}</div>
-                          <div className="small-copy" style={{ color: "#64748b", fontSize: 12 }}>{fileName}</div>
+                          <div className="small-copy" style={{ color: "var(--text-soft)", fontSize: 12 }}>{fileName}</div>
                         </div>
                         <div className="row-meta">
+                          {scoreBadge}
                           {aiBadge}
                           <span>{submission.status || "ACTIVE"}</span>
                           <span className="mono">{submission.submission_id.slice(0, 8)}</span>
                         </div>
                       </div>
                     );
-                }) : <div className="empty-state">No submissions for this assignment yet.</div>}
+                }) : (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">📄</div>
+                    <div className="empty-state-title">No submissions yet</div>
+                    <div className="empty-state-hint">Share the access code with students so they can submit their work.</div>
+                  </div>
+                )}
               </div>
 
               <div className="matrix-card matrix-card-compact">
                 <div className="section-label">Similarity matrix</div>
-                <SimilarityMatrix matrix={matrix} labels={displayLabels} onCellClick={handleCellClick} />
+                {matrix && matrix.length > 0 && (
+                  <div className="threshold-filter">
+                    <label className="threshold-label">
+                      Threshold: <strong>{(threshold * 100).toFixed(0)}%</strong>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="0.8"
+                      step="0.05"
+                      value={threshold}
+                      onChange={(e) => setThreshold(parseFloat(e.target.value))}
+                      className="threshold-slider"
+                    />
+                    {threshold > 0 && (
+                      <button
+                        className="button-secondary button-sm"
+                        type="button"
+                        onClick={() => setThreshold(0)}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                )}
+                {refreshing && !matrix ? (
+                  <div className="skeleton skeleton-matrix" />
+                ) : (
+                  <SimilarityMatrix matrix={matrix} labels={displayLabels} onCellClick={handleCellClick} threshold={threshold} />
+                )}
               </div>
 
-              {matrix && displayLabels && matrix.length === displayLabels.length && matrix.length >= 3 && (
-                <CollusionGraph matrix={matrix} labels={displayLabels} />
+              {submissions.length > 0 && (
+                <BatchAnalytics submissions={submissions} />
               )}
             </>
           ) : (
             <div className="empty-state empty-state-large">
-              Choose an assignment from the left or create a new one to begin.
+              <div className="empty-state-icon">📊</div>
+              <div className="empty-state-title">Select an assignment</div>
+              <div className="empty-state-hint">Choose an assignment from the left panel to view submissions, similarity matrix, and details.</div>
             </div>
           )}
         </main>
@@ -654,7 +700,8 @@ export default function Dashboard() {
         rightSubmission={viewer.right}
         similarity={viewer.similarity}
         batchId={selectedId}
-        onClose={() => setViewer({ ...viewer, open: false })}
+        loading={viewerLoading}
+        onClose={closeViewer}
       />
     </div>
   );

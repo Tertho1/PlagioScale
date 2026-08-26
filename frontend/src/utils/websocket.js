@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE } from "./config";
 import { getToken } from "./auth";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 const MAX_RECONNECT_DELAY = 60000;
 const BASE_RECONNECT_DELAY = 2000;
+const MAX_RETRIES = 10;
 
 export function useBatchProgress(batchId) {
-  const [progress, setProgress] = useState({ processed: 0, total: 0 });
+  const [progress, setProgress] = useState({ processed: 0, total: 0, connected: false, failed: false });
   const wsRef = useRef(null);
   const retryRef = useRef(0);
   const cancelledRef = useRef(false);
 
   const connect = useCallback(() => {
     if (!batchId || cancelledRef.current) return;
+    if (retryRef.current >= MAX_RETRIES) {
+      setProgress((p) => ({ ...p, failed: true }));
+      return;
+    }
 
     try {
       const token = getToken();
@@ -24,7 +28,7 @@ export function useBatchProgress(batchId) {
         try {
           const d = JSON.parse(ev.data);
           if (typeof d.processed === "number") {
-            setProgress(d);
+            setProgress((p) => ({ ...p, processed: d.processed, total: d.total, connected: true, failed: false }));
           }
         } catch {
           // ignore non-JSON messages (e.g. pings)
@@ -37,6 +41,7 @@ export function useBatchProgress(batchId) {
 
       ws.onclose = () => {
         if (cancelledRef.current) return;
+        setProgress((p) => ({ ...p, connected: false }));
         const delay = Math.min(
           BASE_RECONNECT_DELAY * Math.pow(2, retryRef.current),
           MAX_RECONNECT_DELAY,
@@ -47,6 +52,7 @@ export function useBatchProgress(batchId) {
 
       ws.onopen = () => {
         retryRef.current = 0;
+        setProgress((p) => ({ ...p, connected: true, failed: false }));
       };
 
       wsRef.current = ws;

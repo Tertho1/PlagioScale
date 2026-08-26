@@ -20,11 +20,11 @@ export default function Dropzone({onFile}){
       <div className="file-zone-row">
         <div>
           <strong>Drag and drop your file here</strong>
-          <p>Or click the button below to choose a PDF or DOCX file from your computer.</p>
+          <p>Or click the button below to choose a file from your computer.</p>
         </div>
         <label className="file-button">
           Choose file
-          <input type="file" style={{display:'none'}} onChange={e=>onFile && onFile(e.target.files[0])} />
+          <input type="file" accept=".pdf,.docx,.txt,.md,.csv,.py,.java,.js,.ts" style={{display:'none'}} onChange={e=>onFile && onFile(e.target.files[0])} />
         </label>
       </div>
     </div>

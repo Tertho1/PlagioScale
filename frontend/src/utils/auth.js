@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+import { API_BASE } from "./config";
 const USER_KEY = "plagioscale_user_email";
 const TOKEN_KEY = "plagioscale_access_token";
 let refreshPromise = null;
@@ -126,4 +126,42 @@ export function fetchOpts(opts = {}) {
       ...(opts.headers || {}),
     },
   };
+}
+
+let isRefreshing = false;
+
+export async function authFetch(url, opts = {}) {
+  const doFetch = async () => {
+    const headers = { ...(opts.headers || {}) };
+    const token = getToken();
+    const csrf = getCookie("csrf_token");
+    if (token && !headers["Authorization"]) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    if (csrf && !headers["X-CSRF-Token"]) {
+      headers["X-CSRF-Token"] = csrf;
+    }
+    return fetch(url, { ...opts, credentials: "include", headers });
+  };
+
+  let res = await doFetch();
+
+  if (res.status === 401 && !isRefreshing) {
+    isRefreshing = true;
+    try {
+      const newToken = await refreshToken();
+      if (newToken) {
+        res = await doFetch();
+      }
+    } finally {
+      isRefreshing = false;
+    }
+  }
+
+  if (res.status === 401) {
+    clearToken();
+    window.location.href = "/auth";
+  }
+
+  return res;
 }

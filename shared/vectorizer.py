@@ -66,12 +66,22 @@ class TextVectorizer:
             return False
         if not np:
             return False
-        for doc_id, text in self.doc_texts.items():
-            try:
-                emb = self.model.encode(text, convert_to_numpy=True)
+        texts = list(self.doc_texts.values())
+        ids = list(self.doc_texts.keys())
+        if not texts:
+            return True
+        try:
+            embeddings = self.model.encode(texts, batch_size=32, convert_to_numpy=True, show_progress_bar=False)
+            for doc_id, emb in zip(ids, embeddings):
                 self.embeddings[doc_id] = emb.astype('float32')
-            except Exception as e:
-                print(f"[Vectorizer] embedding error for {doc_id}: {e}")
+        except Exception as e:
+            print(f"[Vectorizer] batch embedding error: {e}")
+            for doc_id, text in self.doc_texts.items():
+                try:
+                    emb = self.model.encode(text, convert_to_numpy=True)
+                    self.embeddings[doc_id] = emb.astype('float32')
+                except Exception as e2:
+                    print(f"[Vectorizer] embedding error for {doc_id}: {e2}")
         return True
 
     def _compute_sbert_matrix(self) -> Dict[str, Dict[str, float]]:
@@ -85,14 +95,14 @@ class TextVectorizer:
         if not ok or len(self.embeddings) != n:
             return {}
         matrix = {i: {} for i in ids}
+        vectors = np.array([self.embeddings[i] for i in ids])
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-10
+        normalized = vectors / norms
+        sim = np.dot(normalized, normalized.T)
+        sim = np.clip(sim, 0.0, 1.0)
         for i, id1 in enumerate(ids):
-            v1 = self.embeddings[id1]
-            norm1 = np.linalg.norm(v1) + 1e-10
             for j, id2 in enumerate(ids):
-                v2 = self.embeddings[id2]
-                raw = float(np.dot(v1, v2) / (norm1 * (np.linalg.norm(v2) + 1e-10)))
-                score = max(0.0, min(1.0, raw))
-                matrix[id1][id2] = score
+                matrix[id1][id2] = float(sim[i, j])
         return matrix
 
     def _compute_tfidf_matrix(self) -> Dict[str, Dict[str, float]]:
@@ -125,14 +135,16 @@ class TextVectorizer:
         ids = list(self.doc_ids)
         if not ids:
             return {}
+        ngrams_cache = {}
+        for doc_id in ids:
+            words = self.doc_texts[doc_id].lower().split()
+            ngrams_cache[doc_id] = set(zip(*[words[i:] for i in range(n)])) if len(words) >= n else set(words)
         matrix = {}
         for id1 in ids:
-            words1 = self.doc_texts[id1].lower().split()
-            ngrams1 = set(zip(*[words1[i:] for i in range(n)])) if len(words1) >= n else set(words1)
+            ngrams1 = ngrams_cache[id1]
             matrix[id1] = {}
             for id2 in ids:
-                words2 = self.doc_texts[id2].lower().split()
-                ngrams2 = set(zip(*[words2[i:] for i in range(n)])) if len(words2) >= n else set(words2)
+                ngrams2 = ngrams_cache[id2]
                 if not ngrams1 or not ngrams2:
                     matrix[id1][id2] = 0.0
                 else:

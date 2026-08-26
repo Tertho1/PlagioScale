@@ -46,9 +46,8 @@ services:
       context: .
       dockerfile: api-service/Dockerfile
     user: "65532:65532"
-    ports:
-      - "8000:8000"
-      - "8443:8443"
+    expose:
+      - "8000"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -78,7 +77,7 @@ services:
     networks:
       - plagioscale-network
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 384m
     cpus: 0.5
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -130,6 +129,11 @@ services:
       - USE_MTLS=${USE_MTLS:-false}
       - HF_HOME=/app/hf_cache
       - HF_HUB_DOWNLOAD_TIMEOUT=30
+      # Memory-footprint controls (keep worker under its 2 GiB cap with all 3 models resident)
+      - MALLOC_ARENA_MAX=2
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
     volumes:
       - uploads_data:/app/uploads
       - worker_storage:/app/storage
@@ -165,6 +169,12 @@ services:
       - MAX_WORKERS=5
       - COOLDOWN_SECONDS=20
       - POLL_INTERVAL=5
+      # API scaling (request-count-based)
+      - API_SCALE_UP_THRESHOLD=20
+      - API_SCALE_DOWN_THRESHOLD=5
+      - API_COOLDOWN_SECONDS=30
+      - MIN_API=1
+      - MAX_API=5
       - AUTOSCALER_EVENTS_KEY=autoscaler_events
       - PYTHONUNBUFFERED=1
     volumes:

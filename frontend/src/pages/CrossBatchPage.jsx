@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
+import { API_BASE } from "../utils/config";
 import { getAuthHeaders } from "../utils/auth";
 import { showToast } from "../components/Toast";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export default function CrossBatchPage() {
   const [assignments, setAssignments] = useState([]);

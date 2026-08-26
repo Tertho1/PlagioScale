@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -32,7 +33,15 @@ DATABASE_URL = os.getenv(
     f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800,
+    future=True,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
@@ -68,6 +77,8 @@ class Assignment(Base):
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     allowed_file_types: Mapped[str] = mapped_column(Text, nullable=False, default=".pdf,.docx,.txt")
     allow_anonymous: Mapped[bool] = mapped_column(Integer, nullable=False, default=1)
+    allow_resubmission: Mapped[bool] = mapped_column(Integer, nullable=False, default=1)
+    max_submissions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow
     )
@@ -85,6 +96,7 @@ class Submission(Base):
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    original_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
     embedding_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -103,6 +115,7 @@ class User(Base):
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    roll: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
     token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -138,6 +151,22 @@ class Notification(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     sent: Mapped[bool] = mapped_column(Integer, default=0)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow
+    )
+
+
+class Annotation(Base):
+    """Instructor annotation on a submission."""
+
+    __tablename__ = "annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    submission_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    author_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    highlight_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow
     )
@@ -188,8 +217,14 @@ def migrate_db() -> None:
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS email VARCHAR(256)",
         "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS user_id VARCHAR(64)",
+        "ALTER TABLE submissions ADD COLUMN IF NOT EXISTS original_filename VARCHAR(256)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'user'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS roll VARCHAR(64)",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS allow_resubmission INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS max_submissions INTEGER NOT NULL DEFAULT 0",
+        "CREATE TABLE IF NOT EXISTS annotations (id INTEGER PRIMARY KEY, submission_id VARCHAR(64) NOT NULL, batch_id VARCHAR(64) NOT NULL, author_id VARCHAR(64) NOT NULL, content TEXT NOT NULL, highlight_text TEXT, created_at DATETIME NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_annotations_submission ON annotations (submission_id)",
         "CREATE INDEX IF NOT EXISTS idx_submissions_user_id ON submissions (user_id)",
         "CREATE INDEX IF NOT EXISTS idx_submissions_batch_id ON submissions (batch_id)",
         "CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions (status)",
@@ -358,6 +393,8 @@ def create_assignment(
     due_date: Optional[datetime] = None,
     allowed_file_types: str = ".pdf,.docx,.txt",
     allow_anonymous: bool = True,
+    allow_resubmission: bool = True,
+    max_submissions: int = 0,
 ) -> bool:
     try:
         with get_session() as session:
@@ -372,6 +409,8 @@ def create_assignment(
                     due_date=due_date,
                     allowed_file_types=allowed_file_types,
                     allow_anonymous=allow_anonymous,
+                    allow_resubmission=allow_resubmission,
+                    max_submissions=max_submissions,
                 )
             )
         return True
@@ -389,6 +428,7 @@ def create_submission(
     filename: str,
     file_path: str,
     user_id: Optional[str] = None,
+    original_filename: Optional[str] = None,
 ) -> dict:
     """
     Create a new submission, cancelling any previous active submission for the same (batch, roll).
@@ -426,6 +466,7 @@ def create_submission(
                     name=name,
                     email=email,
                     filename=filename,
+                    original_filename=original_filename,
                     file_path=file_path,
                     status="ACTIVE",
                 )
@@ -453,6 +494,7 @@ def get_submission_by_id(submission_id: str) -> Optional[dict]:
                 "name": record.name,
                 "email": record.email,
                 "filename": record.filename,
+                "original_filename": record.original_filename,
                 "file_path": record.file_path,
                 "status": record.status,
                 "ai_score": record.ai_score,
@@ -482,6 +524,7 @@ def get_submissions_by_batch(batch_id: str, limit: int = None, offset: int = 0) 
                     "name": r.name,
                     "email": r.email,
                     "filename": r.filename,
+                    "original_filename": r.original_filename,
                     "file_path": r.file_path,
                     "status": r.status,
                     "plagiarism_score": r.plagiarism_score,
@@ -511,6 +554,7 @@ def get_submissions_by_user(user_id: str) -> list:
                     "name": r.name,
                     "email": r.email,
                     "filename": r.filename,
+                    "original_filename": r.original_filename,
                     "file_path": r.file_path,
                     "status": r.status,
                     "plagiarism_score": r.plagiarism_score,
@@ -539,6 +583,8 @@ def get_assignment(batch_id: str) -> Optional[dict]:
                 "due_date": record.due_date.isoformat() if record.due_date else None,
                 "allowed_file_types": record.allowed_file_types,
                 "allow_anonymous": bool(record.allow_anonymous),
+                "allow_resubmission": bool(record.allow_resubmission),
+                "max_submissions": record.max_submissions,
                 "created_at": (
                     record.created_at.isoformat() if record.created_at else None
                 ),
@@ -548,7 +594,7 @@ def get_assignment(batch_id: str) -> Optional[dict]:
         return None
 
 
-def update_assignment(batch_id: str, name: str = None, expected_count: int = None) -> bool:
+def update_assignment(batch_id: str, name: str = None, expected_count: int = None, due_date: "datetime | None" = None, due_date_clear: bool = False) -> bool:
     try:
         with get_session() as session:
             record = session.get(Assignment, batch_id)
@@ -558,6 +604,10 @@ def update_assignment(batch_id: str, name: str = None, expected_count: int = Non
                 record.name = name
             if expected_count is not None:
                 record.expected_count = expected_count
+            if due_date_clear:
+                record.due_date = None
+            elif due_date is not None:
+                record.due_date = due_date
             return True
     except Exception as exc:
         print(f"⚠ Failed updating assignment {batch_id}: {exc}")
@@ -566,25 +616,42 @@ def update_assignment(batch_id: str, name: str = None, expected_count: int = Non
 
 def delete_assignment(batch_id: str) -> bool:
     try:
+        file_paths: list[str] = []
         with get_session() as session:
             record = session.get(Assignment, batch_id)
             if not record:
                 return False
-            # Cancel all active submissions for this batch
+            # Collect uploaded file paths for disk cleanup after commit
+            for sub in session.query(Submission).filter(
+                Submission.batch_id == batch_id
+            ).all():
+                if sub.file_path:
+                    file_paths.append(sub.file_path)
+            # Delete all submissions for this batch
             session.query(Submission).filter(
                 Submission.batch_id == batch_id,
-                Submission.status == "ACTIVE",
-            ).update({"status": "CANCELLED"})
+            ).delete()
             # Delete similarity results
             session.query(SimilarityResult).filter(
                 SimilarityResult.batch_id == batch_id,
             ).delete()
             session.delete(record)
-            session.commit()
-            return True
+        _remove_files(file_paths)
+        return True
     except Exception as exc:
         print(f"⚠ Failed deleting assignment {batch_id}: {exc}")
         return False
+
+
+def _remove_files(paths: list[str]) -> None:
+    """Best-effort removal of uploaded files; never raises."""
+    import os
+    for p in paths:
+        try:
+            if p and os.path.isfile(p):
+                os.remove(p)
+        except OSError as exc:
+            print(f"⚠ Could not remove uploaded file {p}: {exc}")
 
 
 def get_assignment_by_access_code(access_code: str) -> Optional[dict]:
@@ -631,6 +698,8 @@ def list_assignments() -> list:
                     "due_date": r.due_date.isoformat() if r.due_date else None,
                     "allowed_file_types": r.allowed_file_types,
                     "allow_anonymous": bool(r.allow_anonymous),
+                    "allow_resubmission": bool(r.allow_resubmission),
+                    "max_submissions": r.max_submissions,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
                 for r in records
@@ -811,7 +880,7 @@ def get_similarity_matrix(batch_id: str) -> dict:
 
 
 ## User helpers
-def create_user(user_id: str, email: str, name: Optional[str], password_hash: str, role: str = "user") -> bool:
+def create_user(user_id: str, email: str, name: Optional[str], password_hash: str, role: str = "user", roll: Optional[str] = None) -> bool:
     try:
         with get_session() as session:
             session.add(
@@ -819,12 +888,16 @@ def create_user(user_id: str, email: str, name: Optional[str], password_hash: st
                     user_id=user_id,
                     email=email,
                     name=name,
+                    roll=roll,
                     password_hash=password_hash,
                     role=role,
                     token_version=0,
                 )
             )
         return True
+    except IntegrityError as exc:
+        print(f"⚠ User already exists {email}: {exc}")
+        raise
     except Exception as exc:
         print(f"⚠ Failed creating user {email}: {exc}")
         return False
@@ -840,6 +913,7 @@ def get_user_by_email(email: str) -> Optional[dict]:
                 "user_id": record.user_id,
                 "email": record.email,
                 "name": record.name,
+                "roll": record.roll,
                 "role": record.role,
                 "password_hash": record.password_hash,
                 "token_version": record.token_version,
@@ -860,6 +934,7 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
                 "user_id": record.user_id,
                 "email": record.email,
                 "name": record.name,
+                "roll": record.roll,
                 "role": record.role,
                 "token_version": record.token_version,
                 "created_at": record.created_at.isoformat() if record.created_at else None,
@@ -869,14 +944,33 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
         return None
 
 
+def get_user_by_roll(roll: str) -> Optional[dict]:
+    try:
+        with get_session() as session:
+            record = session.query(User).filter(User.roll == roll).first()
+            if not record:
+                return None
+            return {
+                "user_id": record.user_id,
+                "email": record.email,
+                "name": record.name,
+                "roll": record.roll,
+                "role": record.role,
+            }
+    except Exception as exc:
+        print(f"⚠ Failed reading user by roll {roll}: {exc}")
+        return None
+
+
 def get_paginated_users(search: str = "", page: int = 1, per_page: int = 20) -> dict:
     try:
         with get_session() as session:
             query = session.query(User)
             if search:
-                pattern = f"%{search}%"
+                escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                pattern = f"%{escaped}%"
                 query = query.filter(
-                    User.email.ilike(pattern) | User.name.ilike(pattern)
+                    User.email.ilike(pattern, escape="\\") | User.name.ilike(pattern, escape="\\")
                 )
             total = query.count()
             records = query.order_by(User.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
@@ -894,6 +988,58 @@ def get_paginated_users(search: str = "", page: int = 1, per_page: int = 20) -> 
     except Exception as exc:
         print(f"⚠ Failed listing users: {exc}")
         return {"users": [], "total": 0, "page": page, "per_page": per_page}
+
+
+def create_annotation(submission_id: str, batch_id: str, author_id: str, content: str, highlight_text: Optional[str] = None) -> bool:
+    try:
+        with get_session() as session:
+            session.add(Annotation(
+                submission_id=submission_id,
+                batch_id=batch_id,
+                author_id=author_id,
+                content=content,
+                highlight_text=highlight_text,
+            ))
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed creating annotation: {exc}")
+        return False
+
+
+def get_annotations_for_submission(submission_id: str) -> list:
+    try:
+        with get_session() as session:
+            records = session.query(Annotation).filter(
+                Annotation.submission_id == submission_id
+            ).order_by(Annotation.created_at.desc()).all()
+            return [
+                {
+                    "id": r.id,
+                    "submission_id": r.submission_id,
+                    "batch_id": r.batch_id,
+                    "author_id": r.author_id,
+                    "content": r.content,
+                    "highlight_text": r.highlight_text,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ]
+    except Exception as exc:
+        print(f"⚠ Failed reading annotations: {exc}")
+        return []
+
+
+def delete_annotation(annotation_id: int, author_id: str) -> bool:
+    try:
+        with get_session() as session:
+            record = session.get(Annotation, annotation_id)
+            if not record or record.author_id != author_id:
+                return False
+            session.delete(record)
+        return True
+    except Exception as exc:
+        print(f"⚠ Failed deleting annotation: {exc}")
+        return False
 
 
 def update_user_role(user_id: str, new_role: str) -> bool:
@@ -945,18 +1091,26 @@ def get_cross_batch_comparisons(batch_id_1: str, batch_id_2: str) -> list:
                 .filter(Submission.batch_id == batch_id_2, Submission.status == "ACTIVE")
                 .all()
             )
+            sub_ids_1 = [s.submission_id for s in subs_1]
+            sub_ids_2 = [s.submission_id for s in subs_2]
+
+            sim_results = (
+                session.query(SimilarityResult)
+                .filter(
+                    SimilarityResult.batch_id == batch_id_1,
+                    SimilarityResult.submission_id_1.in_(sub_ids_1),
+                    SimilarityResult.submission_id_2.in_(sub_ids_2),
+                )
+                .all()
+            )
+            sim_map = {}
+            for r in sim_results:
+                sim_map[(r.submission_id_1, r.submission_id_2)] = r
+
             results = []
             for s1 in subs_1:
                 for s2 in subs_2:
-                    result = (
-                        session.query(SimilarityResult)
-                        .filter(
-                            SimilarityResult.batch_id == batch_id_1,
-                            SimilarityResult.submission_id_1 == s1.submission_id,
-                            SimilarityResult.submission_id_2 == s2.submission_id,
-                        )
-                        .first()
-                    )
+                    result = sim_map.get((s1.submission_id, s2.submission_id))
                     if result:
                         results.append(
                             {
@@ -1003,12 +1157,14 @@ def get_student_comparison_details(submission_id: str) -> list:
                         "roll": sub.roll,
                         "name": sub.name,
                         "filename": sub.filename,
+                        "original_filename": sub.original_filename,
                         "ai_score": sub.ai_score,
                         "plagiarism_score": sub.plagiarism_score,
                         "compared_with_id": other_id,
                         "compared_with_roll": other.roll if other else "?",
                         "compared_with_name": other.name if other else "?",
                         "compared_with_filename": other.filename if other else "?",
+                        "compared_with_original_filename": other.original_filename if other else None,
                         "similarity_score": r.similarity_score,
                     }
                 )

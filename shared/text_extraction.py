@@ -1,4 +1,5 @@
 """Text extraction from common document formats."""
+import tempfile
 from pathlib import Path
 
 
@@ -25,3 +26,23 @@ def extract_text(file_path: str) -> str:
             return f.read()
     except Exception as e:
         return f"ERROR: {str(e)}"
+
+
+def extract_text_from_bytes(content: bytes, filename: str) -> str:
+    """Extract text from in-memory file content.
+
+    Writes to a temp file so the format-specific extractors can be reused.
+    """
+    suffix = Path(filename).suffix.lower()
+    tmp = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp.write(content)
+        tmp.close()
+        return extract_text(tmp.name)
+    finally:
+        if tmp is not None:
+            try:
+                Path(tmp.name).unlink(missing_ok=True)
+            except OSError:
+                pass

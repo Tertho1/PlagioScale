@@ -10,14 +10,17 @@ class TestQueueClient:
 
         client = QueueClient()
         client.redis_client = MagicMock()
-        client.redis_client.lpush.return_value = 1
+        mock_pipe = MagicMock()
+        client.redis_client.pipeline.return_value = mock_pipe
 
         job = Job(job_id="test-123", text="hello world")
         result = client.enqueue_job(job)
 
         assert result is True
-        client.redis_client.lpush.assert_called_once()
-        client.redis_client.hset.assert_called_once()
+        client.redis_client.pipeline.assert_called_once()
+        mock_pipe.lpush.assert_called_once()
+        mock_pipe.hset.assert_called_once()
+        mock_pipe.execute.assert_called_once()
 
     @patch("shared.queue_client.redis.Redis")
     def test_dequeue_job(self, mock_redis):
@@ -95,7 +98,9 @@ class TestQueueClient:
 
         client = QueueClient()
         client.redis_client = MagicMock()
-        client.redis_client.lpush.side_effect = Exception("Redis down")
+        mock_pipe = MagicMock()
+        client.redis_client.pipeline.return_value = mock_pipe
+        mock_pipe.execute.side_effect = Exception("Redis down")
 
         job = Job(job_id="test-fail", text="will fail")
         result = client.enqueue_job(job)

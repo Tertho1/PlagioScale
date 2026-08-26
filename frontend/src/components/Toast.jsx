@@ -43,7 +43,7 @@ function ToastItem({ id, message, type, duration, onDone }) {
   }, [id, duration, onDone])
 
   return (
-    <div className={`toast toast-${type}`} onClick={() => onDone(id)} role="alert">
+    <div className={`toast toast-${type}`} onClick={() => onDone(id)} role={type === 'error' ? 'alert' : 'status'}>
       {message}
     </div>
   )

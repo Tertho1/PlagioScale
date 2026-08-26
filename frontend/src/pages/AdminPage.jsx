@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { API_BASE } from "../utils/config";
 import { getAuthHeaders, fetchMe, clearToken } from "../utils/auth";
 import { showToast } from "../components/Toast";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -15,7 +14,9 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
+  const usersAbortRef = useRef(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const auditRef = useRef(null);
   const perPage = 20;
@@ -37,7 +38,13 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (tab === "users") loadUsers();
-  }, [page, search, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [page, debouncedSearch, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounce rapid search input to avoid stale-response races
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
     if (tab !== "audit") return;
@@ -45,7 +52,10 @@ export default function AdminPage() {
     (async () => {
       const headers = await getAuthHeaders();
       const token = headers["Authorization"]?.split(" ")[1] || "";
-      evtSource = new EventSource(`${API_BASE}/admin/audit/tail?token=${token}`);
+      const url = token
+        ? `${API_BASE}/admin/audit/tail?token=${token}`
+        : `${API_BASE}/admin/audit/tail`;
+      evtSource = new EventSource(url);
       evtSource.onmessage = (e) => {
         setAuditLogs((prev) => {
           const next = [...prev, e.data];
@@ -70,23 +80,30 @@ export default function AdminPage() {
         credentials: "include",
       });
       if (res.ok) setStats(await res.json());
-    } catch (e) { /* ignore fetch error */ }
+    } catch (e) { console.warn("Failed to load stats:", e); }
   }
 
   async function loadUsers() {
+    // Abort any in-flight request so a slow older response can't overwrite newer results
+    if (usersAbortRef.current) usersAbortRef.current.abort();
+    const controller = new AbortController();
+    usersAbortRef.current = controller;
     try {
       const params = new URLSearchParams({ page, per_page: perPage });
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       const res = await fetch(`${API_BASE}/admin/users?${params}`, {
         headers: await getAuthHeaders(),
         credentials: "include",
+        signal: controller.signal,
       });
       if (res.ok) {
         const data = await res.json();
         setUsers(data.users || []);
         setTotalUsers(data.total || 0);
       }
-    } catch (e) { /* ignore fetch error */ }
+    } catch (e) {
+      if (e?.name !== "AbortError") console.warn("Failed to load users:", e);
+    }
   }
 
   function handleSearch(val) {
@@ -224,8 +241,16 @@ export default function AdminPage() {
                   <td>
                     <select
                       value={u.role}
-                      onChange={(e) => updateRole(u.user_id, e.target.value)}
+                      onChange={(e) => {
+                        const newRole = e.target.value;
+                        if (newRole !== u.role && window.confirm(`Change role for ${u.email} from "${u.role}" to "${newRole}"? This will force them to re-login.`)) {
+                          updateRole(u.user_id, newRole);
+                        } else {
+                          e.target.value = u.role;
+                        }
+                      }}
                       style={{ padding: "4px 8px" }}
+                      aria-label={`Change role for ${u.email}`}
                     >
                       <option value="user">user</option>
                       <option value="teacher">teacher</option>
