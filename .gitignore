@@ -31,7 +31,7 @@ wheels/
 *.swo
 *~
 .DS_Store
-Thumbs.db
+.Thumbs.db
 
 # Environment
 .env
@@ -41,23 +41,12 @@ Thumbs.db
 # Logs
 *.log
 logs/
-*.log.*
 
 # Docker volumes & data
 volumes/
 data/
 postgres_data/
 redis_data/
-
-# Docker
-.dockerignore
-
-# OS
-.DS_Store
-.AppleDouble
-.LSOverride
-*.sublime-project
-*.sublime-workspace
 
 # Ruff
 .ruff_cache/
@@ -93,10 +82,16 @@ backups/
 *.sqlite
 *.sqlite3
 
-# Archives
-*.7z
+# Generated TLS certs (regenerate with: python certs/generate.py)
+certs/*.key
+certs/*.crt
+certs/*.pem
 
-# IDE settings
-.vscode/settings.json
-.vscode/launch.json
-.vscode/extensions.json
+# Sample docs & generated reports
+docs/samples/
+docs/ELASTICITY_DEMO_REPORT.md
+docs/PlagioScale_Lab_Report*.docx
+docs/PlagioScale_Results.docx
+
+# Legacy
+frontend/main.js
