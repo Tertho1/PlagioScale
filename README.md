@@ -23,7 +23,7 @@ docker compose up -d --build
 > 
 > For a comprehensive demo script showing every feature in order, see §5 — Demo Walkthrough in the setup guide.
 
-This starts all 7 services:
+This starts all services:
 
 | Service | Port | Purpose |
 |---|---|---|
@@ -59,14 +59,15 @@ This starts all 7 services:
 | `autoscaler/` | FastAPI, Docker SDK | Docker socket |
 | `monitoring-service/` | FastAPI, Prometheus client, psutil | Redis |
 | `frontend/` | React 18, Vite, react-force-graph-2d | API |
-| `shared/` | Common models, queue client, vectorizer, text extraction | — |
+| `shared/` | Common models, queue client, vectorizer, text extraction, AI detector, OCR, PDF reports, email notifier, external lookup, audit log | — |
 
 ### Plagiarism pipeline
 
 ```
 Submit text/file → API validates → enqueue job in Redis
   → Worker dequeues → extract text (PDF/DOCX/txt)
-  → TF-IDF vectorize → compare_with_database (cosine similarity)
+  → Hybrid similarity: TF-IDF (lexical) + SBERT (semantic)
+  → AI content detection (RoBERTa + DistilGPT2 + stylometric features)
   → Store result in Redis + DB → notify API
 ```
 
@@ -78,7 +79,7 @@ Submit text/file → API validates → enqueue job in Redis
 | **Sync Redis in Worker** | `QueueClient` — synchronous Redis for the blocking worker process |
 | **Text extraction** | `shared/text_extraction.py` — lazy imports for PDF/DOCX/txt to avoid runtime deps in the API |
 | **Autoscaler** | In-container (Docker SDK) — host variant removed |
-| **JWT auth** | localStorage-based (XSS-vulnerable, acceptable for local demo). Auto-refresh with 5-min expiry margin |
+| **JWT auth** | httpOnly cookies + CSRF (primary), localStorage fallback for JS access. Session invalidation on role change via `token_version` |
 | **Rate limiting** | slowapi + WS rate limit (10/min per IP) |
 | **File uploads** | Sanitised filenames, extension whitelist + magic-byte check, 10 MB limit |
 | **WebSocket** | Multi-replica via Redis Pub/Sub (`ws:progress` channel). Stale connections cleaned every 30s |
@@ -114,13 +115,13 @@ npm run test     # Vitest (30 tests)
 ### Tests
 
 ```bash
-# Shared unit tests (35 tests)
+# Shared unit tests
 python -m pytest shared/tests -v
 
-# API integration tests (12 tests, mocked deps)
+# API integration tests
 python -m pytest api-service/tests -v
 
-# Worker integration tests (7 tests, mocked deps)
+# Worker integration tests
 python -m pytest worker-service/tests -v
 
 # All Python tests
@@ -133,7 +134,7 @@ cd frontend && npx vitest run
 ruff check .
 ```
 
-All tests pass on Python 3.14 with mocked dependencies (108 total — 54 shared unit, 12 API, 7 worker, 35 legacy).
+All tests pass on Python 3.14 with mocked dependencies (130 Python + 30 frontend = 160 total).
 
 
 ### Seed data
@@ -176,10 +177,15 @@ api-service/          FastAPI REST API (port 8000)
 worker-service/       Background job processor
 autoscaler/           In-container autoscaler (port 8002)
 monitoring-service/   Live monitoring dashboard (port 8090)
-shared/               Python modules (models, queue, vectorizer, plagiarism, text extraction)
+shared/               Python modules (models, queue, vectorizer, plagiarism, text extraction,
+                      AI detector, OCR, PDF reports, email notifier, external lookup, audit log)
 frontend/             React + Vite + Nginx (port 3050)
-scripts/              Utility scripts (stress test, seed data, autoscaler)
-prometheus/           Prometheus scrape config
+tests/                End-to-end pipeline tests
+alembic/              Database migrations
+certs/                TLS certs (regenerate with: python certs/generate.py)
+scripts/              Utility scripts (stress test, seed data, autoscaler, deploy)
+docs/                 Planning docs + setup guide
+prometheus/           Prometheus scrape config + alerts + alertmanager config
 grafana/              Pre-provisioned dashboards
 ```
 
@@ -196,24 +202,38 @@ grafana/              Pre-provisioned dashboards
 | `/auth/signup` | POST | — | Create account |
 | `/auth/login` | POST | — | Login |
 | `/auth/refresh` | POST | Bearer | Refresh JWT |
+| `/auth/logout` | POST | — | Logout (invalidate session) |
+| `/auth/csrf-token` | GET | — | Get CSRF token |
+| `/auth/me` | GET | Bearer | Get current user profile |
 | `/portal/submit` | POST | Bearer | Upload file submission |
 | `/portal/batches` | GET | Bearer | List batches |
 | `/portal/assignments` | GET | Bearer | List assignments |
+| `/portal/assignments` | POST | Bearer | Create assignment |
+| `/portal/assignments/{batch_id}` | GET | Bearer | Get assignment detail |
+| `/portal/assignments/{batch_id}` | PUT | Bearer | Update assignment settings |
+| `/portal/assignments/{batch_id}` | DELETE | Bearer | Delete assignment |
 | `/portal/submissions/{batch_id}` | GET | Bearer | List submissions (paginated) |
-| `/portal/submissions/{batch_id}/{sub_id}/text` | GET | Bearer | Get extracted text |
-| `/portal/compute/{batch_id}` | POST | Bearer | Trigger similarity computation |
-| `/portal/matrix/{batch_id}` | GET | Bearer | Get similarity matrix |
-| `/portal/export/{batch_id}` | GET | Bearer | Download CSV (roll, name, email, submission_id, filename, scores) |
+| `/portal/submissions/{batch_id}/{submission_id}/text` | GET | Bearer | Get extracted text |
+| `/portal/submissions/{submission_id}/cancel` | POST | Bearer | Cancel a submission |
+| `/portal/compute-similarity/{batch_id}` | POST | Bearer | Trigger similarity computation |
+| `/portal/similarity-matrix/{batch_id}` | GET | Bearer | Get similarity matrix |
 | `/portal/report/{batch_id}/{sub_id_1}/{sub_id_2}` | GET | Bearer | Download PDF similarity report |
 | `/portal/cross-batch/{batch_id_1}/{batch_id_2}` | GET | Bearer | Compare submissions across two batches |
 | `/portal/student-comparison/{submission_id}` | GET | Bearer | All pairwise scores for one student |
-| `/portal/external-lookup/{submission_id}` | GET | Bearer | Simulated web/academic phrase search |
+| `/portal/self-check` | POST | Bearer | Student draft self-check |
+| `/portal/annotations/{submission_id}` | GET/POST | Bearer | Get/post instructor annotations |
+| `/portal/annotations/{annotation_id}` | DELETE | Bearer | Delete annotation |
+| `/portal/external-lookup/{submission_id}` | POST | Bearer | Simulated web/academic phrase search |
+| `/portal/notify` | POST | Bearer | Trigger email notifications for a batch |
+| `/portal/notify-email/{submission_id}` | POST | Bearer | Send notification for one submission |
+| `/portal/my` | GET | Bearer | Get current user's submissions |
 | `/admin/stats` | GET | Admin | System-wide statistics |
 | `/admin/stats/export` | GET | Admin | Download stats as CSV |
 | `/admin/users` | GET | Admin | List users (search, paginated) |
-| `/admin/users/{id}/role` | POST | Admin | Change user role |
+| `/admin/users/{user_id}/role` | POST | Admin | Change user role |
 | `/admin/notifications/send` | POST | Admin | Send pending email notifications |
 | `/admin/audit/tail` | GET | Admin | SSE stream of audit log entries |
+| `/api/webhooks/alertmanager` | POST | — | Alertmanager webhook for auto-remediation |
 | `/ws` | — | — | WebSocket (progress updates, multi-replica via Redis Pub/Sub) |
 
 ---
@@ -223,13 +243,17 @@ grafana/              Pre-provisioned dashboards
 See `TODO.md` for per-task tracking and `AGENTS.md` for agent context (including branch strategy and work rules).
 
 Key recent additions:
-- **Round 13** — Session invalidation on role change, WS rate limiting, CSV stats export, admin users search/pagination, non-root containers, dark mode, live audit log tail, compose health monitor, Grafana audit dashboard, multi-replica WebSocket (Redis Pub/Sub), optional mTLS, 54 new unit tests (108 total)
+- **Round 22** — Post-push UI bug fixes (login flow, roll fallback, access code copy)
+- **Round 21** — UI accessibility (similarity bands, badge semantics, theme flash prevention, cookie-auth on submit, live smoke 17/17)
+- **Round 20** — Security depth, worker reliability, frontend polish (role hierarchy, HMAC CSRF, signup enumeration, AI detect timeout, fire-and-forget notifications)
+- **Round 19** — Bug fixes, security hardening, performance (SBERT batching, vectorized cosine, DB pool sizing, ErrorBoundary, lazy CollusionGraph)
+- **Round 18** — Feature additions (similarity bands, threshold filter, in-document highlights, AI confidence labels, student self-check, assignment settings, side-by-side comparison, batch analytics, empty states, annotation layer)
+- **Round 17** — Security audit remediation (ownership checks, access code hiding, CSRF on mutations)
+- **Round 16** — Refactoring & frontend improvements (auth guards, React.lazy, skeleton loading, WS retry)
+- **Round 15** — Similarity compute + AI detection stability (HF cache, stale job recovery, retry limits)
+- **Round 13** — Session invalidation, WS rate limiting, CSV export, admin search/pagination, non-root containers, dark mode, live audit log, multi-replica WebSocket, mTLS, 54 unit tests
 - **Phase 4** — Collusion graph, blind review mode, CSV enhanced columns
-- **Phase 5** — 54 Python tests (12 API + 7 worker + 35 shared), 30 frontend tests, seed data script, stress test with autoscaling verification
-- **Round 5** — Database init resilience (worker no longer stuck if migration fails), batch compute failure propagation (clear error messages for failed extractions), auth-aware frontend navigation (Login/Sign up hidden when logged in, nav shows email, auth page redirects)
-- JWT refresh mechanism, rate limiting, file upload validation
-- Matched similarity matrix with row/column order for collusion graph
-- `hash_password()` error handling for passlib/bcrypt compatibility
+- **Phase 5** — 160 tests total, seed data script, stress test with autoscaling verification
 
 ---
 
